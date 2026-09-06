@@ -1,0 +1,7 @@
+{
+  "step": "List blog post drafts in content/drafts/ to assess existing coverage",
+  "tool": "exec",
+  "args": { "command": "ls -la /home/daytona/speckly/content/drafts/" },
+  "needs_deepseek": false,
+  "expects": "See the 10 blog post draft filenames"
+}
