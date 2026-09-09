@@ -3,9 +3,10 @@ import { HybridAgent } from './agent/agent';
 import { Phase6ReliabilitySupervisor } from './agent/reliability';
 import { LayraScheduler } from './agent/scheduler';
 import { getModelConfig, testModelConnection } from './config/model-provider';
+import { TelegramGateway } from './integrations/telegram';
 
 function printHelp(): void {
-  console.log(`Layra 3.0\n\nUsage:\n  npm start -- "<goal>"          Run an autonomous goal\n  npm start -- --once "<prompt>" Run one interactive model/tool turn\n  npm start -- --chat             Start an interactive session\n  npm start -- --doctor           Check model connectivity\n  npm start -- --help             Show this help\n\nEnvironment:\n  NVIDIA_API_KEY / LAYRA_MODEL_API_KEY_ENV   Model credential\n  LAYRA_ALLOW_LOCAL_WRITE=true               Enable filesystem writes\n  LAYRA_ALLOW_SHELL=true                     Enable shell/process tools\n  LAYRA_ALLOW_WEB_POST=true                  Enable HTTP POST tools\n  LAYRA_ALLOW_BROWSER=true                    Enable configured Chromium CDP tools\n  LAYRA_ALLOW_MCP=true                        Enable configured MCP stdio server\n  LAYRA_ALLOW_SCHEDULER=true                 Enable durable scheduled jobs\n  LAYRA_ALLOW_DELEGATION=true                Enable internal delegated tasks\n  LAYRA_ALLOW_ANDROID=true                   Enable optional Termux/Android helpers\n  LAYRA_MAX_RUNTIME_MS=<ms>                  Stop autonomous execution after a wall-clock budget\n  LAYRA_MAX_TOTAL_ACTIONS=<n>                Stop autonomous execution after an action budget\n  LAYRA_MAX_CONSECUTIVE_FAILURES=<n>         Stop runaway failure loops\n  LAYRA_MAX_TASK_AGE_MS=<ms>                 Stop if an active task becomes stuck`);
+  console.log(`Layra 3.0\n\nUsage:\n  npm start -- "<goal>"          Run an autonomous goal\n  npm start -- --once "<prompt>" Run one interactive model/tool turn\n  npm start -- --chat             Start an interactive session\n  npm start -- --telegram         Start Telegram remote control\n  npm start -- --doctor           Check model connectivity\n  npm start -- --help             Show this help\n\nEnvironment:\n  NVIDIA_API_KEY / LAYRA_MODEL_API_KEY_ENV   Model credential\n  LAYRA_TELEGRAM_BOT_TOKEN=<token>          Telegram bot token\n  LAYRA_TELEGRAM_ALLOWED_USER_IDS=<ids>      Comma-separated Telegram user IDs allowed to control Layra\n  LAYRA_ALLOW_LOCAL_WRITE=true               Enable filesystem writes\n  LAYRA_ALLOW_SHELL=true                     Enable shell/process tools\n  LAYRA_ALLOW_WEB_POST=true                  Enable HTTP POST tools\n  LAYRA_ALLOW_BROWSER=true                   Enable configured Chromium CDP tools\n  LAYRA_ALLOW_MCP=true                       Enable configured MCP stdio server\n  LAYRA_ALLOW_SCHEDULER=true                Enable durable scheduled jobs\n  LAYRA_ALLOW_DELEGATION=true               Enable internal delegated tasks\n  LAYRA_ALLOW_ANDROID=true                  Enable optional Termux/Android helpers\n  LAYRA_MAX_RUNTIME_MS=<ms>                 Stop autonomous execution after a wall-clock budget\n  LAYRA_MAX_TOTAL_ACTIONS=<n>               Stop autonomous execution after an action budget\n  LAYRA_MAX_CONSECUTIVE_FAILURES=<n>        Stop runaway failure loops\n  LAYRA_MAX_TASK_AGE_MS=<ms>                Stop if an active task becomes stuck`);
 }
 
 function startScheduler(agent: HybridAgent): LayraScheduler | null {
@@ -23,6 +24,15 @@ function startReliability(agent: HybridAgent): Phase6ReliabilitySupervisor {
   const supervisor = new Phase6ReliabilitySupervisor(agent);
   supervisor.start();
   return supervisor;
+}
+
+function startTelegram(agent: HybridAgent): TelegramGateway {
+  const gateway = new TelegramGateway(agent);
+  if (!gateway.isConfigured()) {
+    throw new Error('Telegram mode requires LAYRA_TELEGRAM_BOT_TOKEN');
+  }
+  void gateway.start();
+  return gateway;
 }
 
 async function runOnce(prompt: string): Promise<void> {
@@ -59,6 +69,22 @@ async function runChat(): Promise<void> {
   shutdown();
 }
 
+async function runTelegram(): Promise<void> {
+  const agent = new HybridAgent();
+  const supervisor = startReliability(agent);
+  const scheduler = startScheduler(agent);
+  const gateway = startTelegram(agent);
+  const shutdown = () => { gateway.stop(); scheduler?.stop(); void supervisor.stop('signal'); agent.stop(); };
+  process.once('SIGINT', shutdown); process.once('SIGTERM', shutdown);
+  console.log('Layra Telegram remote control is running.');
+  await new Promise<void>(resolve => {
+    const onSignal = () => resolve();
+    process.once('SIGINT', onSignal);
+    process.once('SIGTERM', onSignal);
+  });
+  shutdown();
+}
+
 async function main(): Promise<void> {
   const args = process.argv.slice(2);
   if (args.includes('--help') || args.includes('-h')) { printHelp(); return; }
@@ -77,6 +103,7 @@ async function main(): Promise<void> {
     return;
   }
   if (args[0] === '--chat') { await runChat(); return; }
+  if (args[0] === '--telegram') { await runTelegram(); return; }
 
   const goal = process.env.LAYRA_GOAL || args.join(' ').trim();
   const agent = new HybridAgent();
