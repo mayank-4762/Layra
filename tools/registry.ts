@@ -105,7 +105,9 @@ export class ToolRegistry {
   grantBasicPermissions(grantedBy = 'system'): void {
     const safe = ['filesystem.read', 'filesystem.list', 'web.get', 'memory.get', 'memory.set', 'session.search', 'system.info', 'system.time'];
     for (const name of safe) this.grantPermission(name, grantedBy, 'Safe default capability');
-    if (process.env.LAYRA_ALLOW_LOCAL_WRITE === 'true') this.grantPermission('filesystem.write', grantedBy, 'Explicitly enabled by LAYRA_ALLOW_LOCAL_WRITE');
+    // Workspace-contained atomic writes are a core Layra capability. Keep them enabled by default;
+    // set LAYRA_ALLOW_LOCAL_WRITE=false to force read-only mode.
+    if (process.env.LAYRA_ALLOW_LOCAL_WRITE !== 'false') this.grantPermission('filesystem.write', grantedBy, 'Workspace write capability enabled by default; disable with LAYRA_ALLOW_LOCAL_WRITE=false');
     if (process.env.LAYRA_ALLOW_SHELL === 'true') { this.grantPermission('shell.execute', grantedBy, 'Explicitly enabled by LAYRA_ALLOW_SHELL'); for (const name of ['process.start','process.poll','process.list','process.kill','process.wait']) this.grantPermission(name, grantedBy, 'Explicitly enabled by LAYRA_ALLOW_SHELL'); }
     if (process.env.LAYRA_ALLOW_WEB_POST === 'true') this.grantPermission('web.post', grantedBy, 'Explicitly enabled by LAYRA_ALLOW_WEB_POST');
     if (process.env.LAYRA_ALLOW_BROWSER === 'true' && process.env.LAYRA_CDP_WS_URL) for (const name of ['browser.navigate','browser.snapshot','browser.accessibility','browser.screenshot','browser.tabs','browser.click','browser.type','browser.key']) this.grantPermission(name, grantedBy, 'Explicitly enabled by LAYRA_ALLOW_BROWSER');
