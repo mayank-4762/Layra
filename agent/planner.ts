@@ -6,6 +6,8 @@ export interface PlannerResult { steps: PlannedStep[]; confidence: number; reaso
 export interface PlannedStep {
   id: string; description: string; tool: string; parameters: Record<string, any>; dependsOn: string[];
   estimatedDuration: number; priority: number; riskLevel: 'low' | 'medium' | 'high'; verificationRequired: boolean; expectedOutcome: string;
+  /** Skills the planner intends this step to follow; usage is only recorded after execution produces a result. */
+  skillRefs?: string[];
 }
 
 export abstract class BasePlanner {
@@ -31,13 +33,13 @@ export class SimplePlanner extends BasePlanner {
     const urls = goal.match(/https?:\/\/[^\s)]+/g) || [];
     const firstUrl = urls[0];
     if (firstUrl && this.toolRegistry.isToolAvailable('web.get')) {
-      steps.push({ id: 'simple_web_1', description: `Fetch referenced URL: ${firstUrl}`, tool: 'web.get', parameters: { url: firstUrl }, dependsOn: [], estimatedDuration: 5, priority: 1, riskLevel: 'low', verificationRequired: true, expectedOutcome: 'Successful retrieval of the referenced URL' });
+      steps.push({ id: 'simple_web_1', description: `Fetch referenced URL: ${firstUrl}`, tool: 'web.get', parameters: { url: firstUrl }, dependsOn: [], estimatedDuration: 5, priority: 1, riskLevel: 'low', verificationRequired: true, expectedOutcome: 'Successful retrieval of the referenced URL', skillRefs: [] });
     }
     if (this.toolRegistry.isToolAvailable('filesystem.list')) {
-      steps.push({ id: steps.length ? 'simple_workspace_2' : 'simple_workspace_1', description: 'Inspect the Layra workspace to gather local evidence', tool: 'filesystem.list', parameters: { path: '.', recursive: false }, dependsOn: steps.length ? [steps[0].id] : [], estimatedDuration: 2, priority: 1, riskLevel: 'low', verificationRequired: true, expectedOutcome: 'Workspace evidence relevant to the goal' });
+      steps.push({ id: steps.length ? 'simple_workspace_2' : 'simple_workspace_1', description: 'Inspect the Layra workspace to gather local evidence', tool: 'filesystem.list', parameters: { path: '.', recursive: false }, dependsOn: steps.length ? [steps[0].id] : [], estimatedDuration: 2, priority: 1, riskLevel: 'low', verificationRequired: true, expectedOutcome: 'Workspace evidence relevant to the goal', skillRefs: [] });
     }
     if (!steps.length && this.toolRegistry.isToolAvailable('system.info')) {
-      steps.push({ id: 'simple_system_1', description: 'Inspect Layra runtime information', tool: 'system.info', parameters: {}, dependsOn: [], estimatedDuration: 1, priority: 1, riskLevel: 'low', verificationRequired: true, expectedOutcome: 'Runtime information available for planning' });
+      steps.push({ id: 'simple_system_1', description: 'Inspect Layra runtime information', tool: 'system.info', parameters: {}, dependsOn: [], estimatedDuration: 1, priority: 1, riskLevel: 'low', verificationRequired: true, expectedOutcome: 'Runtime information available for planning', skillRefs: [] });
     }
     const bounded = steps.slice(0, this.options.maxSteps);
     return { steps: bounded, confidence: bounded.length ? 0.35 : 0, reasoning: `Conservative fallback planning for goal: ${goal}`, alternatives: [] };
