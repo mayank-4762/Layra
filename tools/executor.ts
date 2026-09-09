@@ -11,13 +11,14 @@ import { LayraMcpClient } from './mcp-client';
 import { LayraScheduler } from '../agent/scheduler';
 import { LayraDelegator } from '../agent/delegation';
 import { AndroidTermuxBridge } from './android-termux';
+import { AndroidControlBridge } from './android-control';
 import path from 'path';
 
 export interface ToolExecutionResult { success: boolean; result: any; error: string | null; executionTime: number; metadata?: Record<string, any>; }
 /** Single execution boundary for Layra; all capabilities remain in one runtime. */
 export class ToolExecutor {
-  private readonly toolRegistry: ToolRegistry; private readonly state: AgentState; private readonly runtime: NativeRuntime; private readonly processRegistry: ProcessRegistry; private readonly memoryStore: MemoryStore; private readonly browser: BrowserCdp; private readonly mcp: LayraMcpClient; private readonly scheduler: LayraScheduler; private readonly delegator: LayraDelegator; private readonly android: AndroidTermuxBridge;
-  constructor(toolRegistry: ToolRegistry, state: AgentState) { this.toolRegistry = toolRegistry; this.state = state; this.runtime = new NativeRuntime(); this.processRegistry = new ProcessRegistry(); this.memoryStore = new MemoryStore(); this.browser = new BrowserCdp(); this.mcp = new LayraMcpClient(); this.scheduler = new LayraScheduler(); this.delegator = new LayraDelegator(toolRegistry, this); this.android = new AndroidTermuxBridge(); }
+  private readonly toolRegistry: ToolRegistry; private readonly state: AgentState; private readonly runtime: NativeRuntime; private readonly processRegistry: ProcessRegistry; private readonly memoryStore: MemoryStore; private readonly browser: BrowserCdp; private readonly mcp: LayraMcpClient; private readonly scheduler: LayraScheduler; private readonly delegator: LayraDelegator; private readonly android: AndroidTermuxBridge; private readonly androidControl: AndroidControlBridge;
+  constructor(toolRegistry: ToolRegistry, state: AgentState) { this.toolRegistry = toolRegistry; this.state = state; this.runtime = new NativeRuntime(); this.processRegistry = new ProcessRegistry(); this.memoryStore = new MemoryStore(); this.browser = new BrowserCdp(); this.mcp = new LayraMcpClient(); this.scheduler = new LayraScheduler(); this.delegator = new LayraDelegator(toolRegistry, this); this.android = new AndroidTermuxBridge(); this.androidControl = new AndroidControlBridge(); }
   async execute(toolName: string, parameters: Record<string, any>, signal?: AbortSignal): Promise<ToolExecutionResult> {
     const startTime = Date.now(); let result: ToolExecutionResult;
     try { if (!this.toolRegistry.isToolAvailable(toolName)) result = this.fail(toolName, 'Tool is not available or permission is not granted', startTime); else if (signal?.aborted) result = this.fail(toolName, 'Execution aborted', startTime); else { await this.toolRegistry.runBeforeHooks(toolName, parameters, { signal, goal: this.state.currentGoal, sessionId: this.state.id }); result = await this.dispatch(toolName, parameters, startTime, signal); } }
@@ -67,6 +68,15 @@ export class ToolExecutor {
       case 'android.open_url': return this.ok(await this.android.openUrl(String(parameters.url || '')), startTime, { executor: 'termux-android' });
       case 'android.clipboard_get': return this.ok(await this.android.clipboardGet(), startTime, { executor: 'termux-android' });
       case 'android.clipboard_set': return this.ok(await this.android.clipboardSet(String(parameters.text || '')), startTime, { executor: 'termux-android' });
+      case 'android.control.health': return this.ok(await this.androidControl.health(signal), startTime, { executor: 'android-accessibility' });
+      case 'android.control.tree': return this.ok(await this.androidControl.tree(signal), startTime, { executor: 'android-accessibility' });
+      case 'android.control.tap': return this.ok(await this.androidControl.tap(parameters.selector && typeof parameters.selector === 'object' ? parameters.selector : {}, signal), startTime, { executor: 'android-accessibility' });
+      case 'android.control.type': return this.ok(await this.androidControl.type(parameters.selector && typeof parameters.selector === 'object' ? parameters.selector : {}, String(parameters.text || ''), signal), startTime, { executor: 'android-accessibility' });
+      case 'android.control.swipe': return this.ok(await this.androidControl.swipe(Number(parameters.startX), Number(parameters.startY), Number(parameters.endX), Number(parameters.endY), Number(parameters.durationMs || 400), signal), startTime, { executor: 'android-accessibility' });
+      case 'android.control.back': return this.ok(await this.androidControl.back(signal), startTime, { executor: 'android-accessibility' });
+      case 'android.control.home': return this.ok(await this.androidControl.home(signal), startTime, { executor: 'android-accessibility' });
+      case 'android.control.launch': return this.ok(await this.androidControl.launch(String(parameters.packageName || ''), parameters.activity ? String(parameters.activity) : undefined, signal), startTime, { executor: 'android-accessibility' });
+      case 'android.control.screenshot': return this.ok(await this.androidControl.screenshot(signal), startTime, { executor: 'android-accessibility', binary: true });
       default: { const remote = this.toolRegistry.resolveMcpTool(toolName); if (remote) return this.ok(await this.mcp.callTool(remote, parameters, signal), startTime, { executor: 'layra-mcp', dynamic: true, remoteTool: remote }); return this.fail(toolName, `Unsupported tool: ${toolName}`, startTime); }
     }
   }
