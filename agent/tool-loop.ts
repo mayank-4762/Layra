@@ -4,7 +4,23 @@ import { ToolRegistry } from '../tools/registry';
 import { compressMessages } from '../core/context';
 import { normalizeToolResult, toProviderToolName } from '../core/tool-protocol';
 
-export interface ToolLoopOptions { maxRounds?: number; maxToolCallsPerRound?: number; signal?: AbortSignal; client?: ModelClient; }
+export interface ToolLoopProgress {
+  type: 'round_start' | 'model_complete' | 'tool_start' | 'tool_complete' | 'completed' | 'stopped';
+  round: number;
+  totalToolCalls: number;
+  toolName?: string;
+  success?: boolean;
+  message?: string;
+  elapsedMs: number;
+}
+
+export interface ToolLoopOptions {
+  maxRounds?: number;
+  maxToolCallsPerRound?: number;
+  signal?: AbortSignal;
+  client?: ModelClient;
+  onProgress?: (progress: ToolLoopProgress) => void;
+}
 export interface ToolLoopResult { content: string; rounds: number; toolCalls: number; stoppedReason: 'completed' | 'no_model' | 'aborted' | 'round_limit' | 'tool_error'; messages: ChatMessage[]; }
 
 /**
@@ -15,7 +31,12 @@ export interface ToolLoopResult { content: string; rounds: number; toolCalls: nu
  */
 export async function runToolLoop(initialMessages: ChatMessage[], registry: ToolRegistry, executor: ToolExecutor, options: ToolLoopOptions = {}): Promise<ToolLoopResult> {
   const client = options.client || createModelClient();
-  if (!client) return { content: '', rounds: 0, toolCalls: 0, stoppedReason: 'no_model', messages: [...initialMessages] };
+  const startedAt = Date.now();
+  const emit = (progress: Omit<ToolLoopProgress, 'elapsedMs'>) => options.onProgress?.({ ...progress, elapsedMs: Date.now() - startedAt });
+  if (!client) {
+    emit({ type: 'stopped', round: 0, totalToolCalls: 0, message: 'No model client is configured.' });
+    return { content: '', rounds: 0, toolCalls: 0, stoppedReason: 'no_model', messages: [...initialMessages] };
+  }
   const configuredRounds = Number.isFinite(options.maxRounds) ? Number(options.maxRounds) : Number(process.env.LAYRA_DEFAULT_MAX_TOOL_ROUNDS || 16);
   const configuredCalls = Number.isFinite(options.maxToolCallsPerRound) ? Number(options.maxToolCallsPerRound) : Number(process.env.LAYRA_DEFAULT_MAX_TOOL_CALLS_PER_ROUND || 8);
   const maxRounds = Math.max(1, Math.min(64, configuredRounds));
@@ -24,7 +45,11 @@ export async function runToolLoop(initialMessages: ChatMessage[], registry: Tool
   let totalCalls = 0;
 
   for (let round = 1; round <= maxRounds; round++) {
-    if (options.signal?.aborted) return { content: '', rounds: round - 1, toolCalls: totalCalls, stoppedReason: 'aborted', messages };
+    if (options.signal?.aborted) {
+      emit({ type: 'stopped', round: round - 1, totalToolCalls: totalCalls, message: 'Execution aborted.' });
+      return { content: '', rounds: round - 1, toolCalls: totalCalls, stoppedReason: 'aborted', messages };
+    }
+    emit({ type: 'round_start', round, totalToolCalls: totalCalls, message: `Starting model/tool round ${round} of ${maxRounds}.` });
     messages = compressMessages(messages, {
       maxMessages: Math.max(8, Number(process.env.LAYRA_MAX_CONTEXT_MESSAGES || 40)),
       maxChars: Math.max(8000, Number(process.env.LAYRA_MAX_CONTEXT_CHARS || 60000))
@@ -40,15 +65,24 @@ export async function runToolLoop(initialMessages: ChatMessage[], registry: Tool
         maxTokens: 1600,
         signal: options.signal
       });
+      emit({ type: 'model_complete', round, totalToolCalls: totalCalls, message: turn.toolCalls.length ? `Model requested ${turn.toolCalls.length} tool call${turn.toolCalls.length === 1 ? '' : 's'}.` : 'Model returned a final response.' });
     } catch (error) {
-      if (options.signal?.aborted) return { content: '', rounds: round, toolCalls: totalCalls, stoppedReason: 'aborted', messages };
-      return { content: `Model error: ${error instanceof Error ? error.message : String(error)}`, rounds: round, toolCalls: totalCalls, stoppedReason: 'tool_error', messages };
+      if (options.signal?.aborted) {
+        emit({ type: 'stopped', round, totalToolCalls: totalCalls, message: 'Execution aborted while waiting for the model.' });
+        return { content: '', rounds: round, toolCalls: totalCalls, stoppedReason: 'aborted', messages };
+      }
+      const message = `Model error: ${error instanceof Error ? error.message : String(error)}`;
+      emit({ type: 'stopped', round, totalToolCalls: totalCalls, message });
+      return { content: message, rounds: round, toolCalls: totalCalls, stoppedReason: 'tool_error', messages };
     }
 
     const normalized = turn;
     const rawToolCalls = turn.raw?.choices?.[0]?.message?.tool_calls;
     messages.push({ role: 'assistant', content: normalized.content, ...(Array.isArray(rawToolCalls) && rawToolCalls.length ? { tool_calls: rawToolCalls } : {}) });
-    if (!normalized.toolCalls.length) return { content: normalized.content, rounds: round, toolCalls: totalCalls, stoppedReason: 'completed', messages };
+    if (!normalized.toolCalls.length) {
+      emit({ type: 'completed', round, totalToolCalls: totalCalls, message: 'Model completed the turn without further tool calls.' });
+      return { content: normalized.content, rounds: round, toolCalls: totalCalls, stoppedReason: 'completed', messages };
+    }
 
     const seenIds = new Set<string>();
     const uniqueCalls = normalized.toolCalls.filter(call => {
@@ -60,8 +94,13 @@ export async function runToolLoop(initialMessages: ChatMessage[], registry: Tool
 
     for (const call of executableCalls) {
       totalCalls += 1;
-      if (options.signal?.aborted) return { content: '', rounds: round, toolCalls: totalCalls, stoppedReason: 'aborted', messages };
+      if (options.signal?.aborted) {
+        emit({ type: 'stopped', round, totalToolCalls: totalCalls, message: 'Execution aborted before the next tool call.' });
+        return { content: '', rounds: round, toolCalls: totalCalls, stoppedReason: 'aborted', messages };
+      }
+      emit({ type: 'tool_start', round, totalToolCalls: totalCalls, toolName: call.name, message: `Running ${call.name}...` });
       const result = await executor.execute(call.name, call.arguments, options.signal);
+      emit({ type: 'tool_complete', round, totalToolCalls: totalCalls, toolName: call.name, success: result.success, message: result.success ? `${call.name} completed.` : `${call.name} failed: ${result.error || 'unknown error'}` });
       messages.push({
         role: 'tool',
         tool_call_id: call.id,
@@ -80,8 +119,10 @@ export async function runToolLoop(initialMessages: ChatMessage[], registry: Tool
     }
   }
 
+  const message = `The tool-loop reached its execution budget after ${maxRounds} rounds. Continue from the existing evidence/state rather than restarting the task.`;
+  emit({ type: 'stopped', round: maxRounds, totalToolCalls: totalCalls, message });
   return {
-    content: `The tool-loop reached its execution budget after ${maxRounds} rounds. Continue from the existing evidence/state rather than restarting the task.`,
+    content: message,
     rounds: maxRounds,
     toolCalls: totalCalls,
     stoppedReason: 'round_limit',
