@@ -8,11 +8,10 @@ import { LayraSessionStore } from './layra-session';
 import { createModelClient, getModelConfig } from '../config/model-provider';
 import { MemoryStore } from '../core/memory';
 import { SkillStore } from '../core/skills';
+import { ChatMessage } from '../config/model-provider';
+import { runToolLoop, ToolLoopResult } from './tool-loop';
 
-/**
- * Layra's single runtime. Reasoning, memory, planning, action, observation,
- * evaluation, reflection, replanning, verification and learning share one state.
- */
+/** Layra is one runtime: reasoning, planning, action, memory, evaluation and learning share the same state. */
 export class HybridAgent {
   private readonly state: AgentState;
   private readonly goalTaskManager: GoalTaskManager;
@@ -44,6 +43,11 @@ export class HybridAgent {
     this.memoryStore = new MemoryStore();
     this.skillStore = new SkillStore();
     this.sessionStore = new LayraSessionStore({ maxTasksPerRun: this.maxTasksPerRun });
+    this.toolRegistry.registerHook({
+      after: async (tool, _parameters, result) => {
+        await this.sessionStore.event('tool_completed', tool.name, { success: result.success, error: result.error });
+      }
+    });
   }
 
   private initializeState(): AgentState {
@@ -84,6 +88,21 @@ export class HybridAgent {
 
   stop(): void { this.running = false; }
   stopAgent(): void { this.stop(); }
+
+  /** Run one conversational turn through the same tool surface used by autonomous goals. */
+  async runInteractiveTurn(prompt: string, signal?: AbortSignal): Promise<ToolLoopResult> {
+    const text = prompt.trim();
+    if (!text) throw new Error('Prompt cannot be empty');
+    const messages: ChatMessage[] = [
+      { role: 'system', content: 'You are Layra, one unified autonomous agent. Use tools when evidence or action is required. Never claim a tool action succeeded unless the tool result says success.' },
+      { role: 'user', content: text }
+    ];
+    const result = await runToolLoop(messages, this.toolRegistry, this.toolExecutor, { signal, maxRounds: Number(process.env.LAYRA_MAX_TOOL_ROUNDS || 8), maxToolCallsPerRound: Number(process.env.LAYRA_MAX_TOOL_CALLS_PER_ROUND || 8) });
+    this.state.shortTermMemory.lastInteractiveTurn = { prompt: text, content: result.content, rounds: result.rounds, toolCalls: result.toolCalls, stoppedReason: result.stoppedReason, timestamp: new Date().toISOString() };
+    await this.sessionStore.event('interactive_turn', result.content || result.stoppedReason, { rounds: result.rounds, toolCalls: result.toolCalls });
+    return result;
+  }
+
   setGoal(goal: string): void {
     const value = goal.trim();
     if (!value) throw new Error('Goal cannot be empty');
@@ -228,7 +247,7 @@ export class HybridAgent {
     const steps = this.state.completedTasks.slice(-8).map((task: Task, i: number) => `${i + 1}. ${task.description} (tool: ${task.assignedTo || 'n/a'})`).join('\n');
     const lessons = (this.state.longTermMemory.lessons || []).slice(-5).map((item: any) => `- ${String(item)}`).join('\n');
     try {
-      await this.skillStore.upsert(name, `---\nname: ${name}\ndescription: Reusable workflow learned by Layra from successful execution.\n---\n\n# Procedure\n\n${steps}\n\n# Lessons\n\n${lessons || '- No durable lesson recorded.'}\n`);
+      await this.skillStore.upsert(name, `# Procedure\n\n${steps}\n\n# Lessons\n\n${lessons || '- No durable lesson recorded.'}`, { description: 'Reusable workflow learned by Layra from successful execution.', tools: this.state.completedTasks.slice(-8).map(t => t.assignedTo || '').filter(Boolean) });
       await this.sessionStore.event('skill_learned', `Saved procedural skill ${name}`, { name });
     } catch (error) { this.state.shortTermMemory.skillLearningError = error instanceof Error ? error.message : String(error); }
   }
@@ -251,7 +270,12 @@ export class HybridAgent {
     return true;
   }
 
-  private parseJson(content: string): any { const candidate = content.match(/```(?:json)?\s*([\s\S]*?)\s*```/i)?.[1] || content; const start = candidate.indexOf('{'); const end = candidate.lastIndexOf('}'); if (start < 0 || end <= start) throw new Error('Expected JSON decision'); return JSON.parse(candidate.slice(start, end + 1)); }
+  private parseJson(content: string): any {
+    const candidate = content.match(/```(?:json)?\s*([\s\S]*?)\s*```/i)?.[1] || content;
+    const start = candidate.indexOf('{'); const end = candidate.lastIndexOf('}');
+    if (start < 0 || end <= start) throw new Error('Expected JSON decision');
+    return JSON.parse(candidate.slice(start, end + 1));
+  }
   private safeEvidence(value: any): any { try { const text = JSON.stringify(value); return text.length > 12000 ? `${text.slice(0, 12000)}…` : value; } catch { return String(value); } }
   private sleep(ms: number): Promise<void> { return new Promise(resolve => setTimeout(resolve, ms)); }
 }
