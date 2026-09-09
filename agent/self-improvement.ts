@@ -126,7 +126,6 @@ export class SelfImprovementEngine {
     if (!candidate.change.trim()) return false;
 
     if (candidate.kind === 'code') {
-      // Code changes are safely reviewable proposals, but this engine never executes or promotes them.
       return /diff --git\s+a\/|```diff|```patch/i.test(candidate.change)
         && /(?:test|typecheck|build|verify|verification)/i.test(candidate.change)
         && /(?:rollback|revert|restore|previous version)/i.test(candidate.change);
@@ -300,11 +299,13 @@ export class SelfImprovementEngine {
     if (!skill) return;
     const archiveRoot = assertSafeRelativePath(this.backupsDir, 'archive');
     await fs.mkdir(archiveRoot, { recursive: true });
-    const file = assertSafeRelativePath(archiveRoot, `${name}-${reason}-${Date.now()}.md`);
-    const temp = `${file}.${process.pid}.tmp`;
-    await fs.writeFile(temp, skill.content, 'utf8');
-    await fs.rename(temp, file);
-    await this.memory.remember({ kind: 'event', content: `Archived learned skill ${name} (${reason}) instead of deleting it.`, tags: ['self-improvement', 'curator', 'archive'], importance: 6, source: 'curator' });
+    const archiveDir = assertSafeRelativePath(archiveRoot, `${name}-${reason}-${Date.now()}`);
+    await fs.mkdir(archiveDir, { recursive: true });
+    const backupFile = assertSafeRelativePath(archiveDir, 'SKILL.md');
+    await fs.writeFile(backupFile, skill.content, 'utf8');
+    const sourceDir = path.dirname(skill.path);
+    await fs.rm(sourceDir, { recursive: true, force: true });
+    await this.memory.remember({ kind: 'event', content: `Archived learned skill ${name} (${reason}) from the active catalog without losing its content.`, tags: ['self-improvement', 'curator', 'archive'], importance: 6, source: 'curator' });
   }
 }
 
