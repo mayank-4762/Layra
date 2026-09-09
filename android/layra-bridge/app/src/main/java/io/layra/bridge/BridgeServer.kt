@@ -1,7 +1,6 @@
 package io.layra.bridge
 
 import android.content.Context
-import org.json.JSONArray
 import org.json.JSONObject
 import java.io.BufferedReader
 import java.io.InputStreamReader
@@ -63,14 +62,14 @@ class BridgeServer(private val context: Context, private val port: Int) {
                     method == "GET" && path == "/health" -> service.health()
                     method == "GET" && path == "/tree" -> JSONObject().put("nodes", service.tree())
                     method == "GET" && path == "/screenshot" -> service.screenshot()
-                    method == "POST" && path == "/tap" -> JSONObject().wrapResult(service.tap(JSONObject(body).optJSONObject("selector") ?: JSONObject()))
+                    method == "POST" && path == "/tap" -> service.tap(JSONObject(body).optJSONObject("selector") ?: JSONObject())
                     method == "POST" && path == "/type" -> {
                         val value = JSONObject(body)
-                        JSONObject.wrapResult(service.type(value.optJSONObject("selector") ?: JSONObject(), value.optString("text", "")))
+                        service.type(value.optJSONObject("selector") ?: JSONObject(), value.optString("text", ""))
                     }
                     method == "POST" && path == "/swipe" -> {
                         val value = JSONObject(body)
-                        JSONObject.wrapResult(service.swipe(value.optDouble("startX").toFloat(), value.optDouble("startY").toFloat(), value.optDouble("endX").toFloat(), value.optDouble("endY").toFloat(), value.optLong("durationMs", 400)))
+                        service.swipe(value.optDouble("startX").toFloat(), value.optDouble("startY").toFloat(), value.optDouble("endX").toFloat(), value.optDouble("endY").toFloat(), value.optLong("durationMs", 400))
                     }
                     method == "POST" && path == "/back" -> service.global("back")
                     method == "POST" && path == "/home" -> service.global("home")
@@ -111,8 +110,4 @@ class BridgeServer(private val context: Context, private val port: Int) {
     }
 
     private class HttpError(val code: Int, override val message: String) : RuntimeException(message)
-
-    private companion object {
-        fun JSONObject.wrapResult(value: JSONObject): JSONObject = value
-    }
 }
