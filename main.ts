@@ -28,8 +28,14 @@ function startReliability(agent: HybridAgent): Phase6ReliabilitySupervisor {
 
 function startTelegram(agent: HybridAgent): TelegramGateway {
   const gateway = new TelegramGateway(agent);
-  if (!gateway.isConfigured()) {
+  if (!process.env.LAYRA_TELEGRAM_BOT_TOKEN) {
     throw new Error('Telegram mode requires LAYRA_TELEGRAM_BOT_TOKEN');
+  }
+  if (!process.env.LAYRA_TELEGRAM_ALLOWED_USER_IDS) {
+    throw new Error('Telegram mode requires LAYRA_TELEGRAM_ALLOWED_USER_IDS');
+  }
+  if (!gateway.isConfigured()) {
+    throw new Error('Telegram mode requires a valid Telegram bot token and allowed user ID');
   }
   void gateway.start();
   return gateway;
@@ -78,9 +84,8 @@ async function runTelegram(): Promise<void> {
   process.once('SIGINT', shutdown); process.once('SIGTERM', shutdown);
   console.log('Layra Telegram remote control is running.');
   await new Promise<void>(resolve => {
-    const onSignal = () => resolve();
-    process.once('SIGINT', onSignal);
-    process.once('SIGTERM', onSignal);
+    process.once('SIGINT', resolve);
+    process.once('SIGTERM', resolve);
   });
   shutdown();
 }
