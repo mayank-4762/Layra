@@ -120,7 +120,7 @@ class LayraAccessibilityService : AccessibilityService() {
         val latch = java.util.concurrent.CountDownLatch(1)
         var result: JSONObject? = null
         var failure: Throwable? = null
-        takeScreenshot(android.view.Display.DEFAULT_DISPLAY, executor, object : TakeScreenshotCallback() {
+        takeScreenshot(android.view.Display.DEFAULT_DISPLAY, executor, object : TakeScreenshotCallback {
             override fun onSuccess(screenshot: ScreenshotResult) {
                 try {
                     val bitmap = android.graphics.Bitmap.wrapHardwareBuffer(screenshot.hardwareBuffer, screenshot.colorSpace)
