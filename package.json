@@ -9,7 +9,7 @@
     "start": "node dist/main.js",
     "doctor": "node scripts/doctor.mjs",
     "typecheck": "tsc --noEmit",
-    "test": "npm run typecheck && node --test tests/*.test.mjs"
+    "test": "npm run typecheck && npm run build && node --test tests/*.test.mjs"
   },
   "engines": { "node": ">=22" },
   "devDependencies": { "@types/node": "26.4.1", "typescript": "5.9.2" }
