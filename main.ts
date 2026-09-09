@@ -56,23 +56,41 @@ async function runChat(): Promise<void> {
   const agent = new HybridAgent();
   const supervisor = startReliability(agent);
   const scheduler = startScheduler(agent);
-  const readline = createInterface({ input: process.stdin, output: process.stdout, terminal: true, prompt: 'you> ' });
-  const shutdown = () => { scheduler?.stop(); void supervisor.stop('signal'); readline.close(); agent.stop(); };
-  process.once('SIGINT', shutdown); process.once('SIGTERM', shutdown);
+  const readline = createInterface({ input: process.stdin, output: process.stdout, terminal: true });
+  let shuttingDown = false;
+  const shutdown = () => {
+    if (shuttingDown) return;
+    shuttingDown = true;
+    scheduler?.stop();
+    void supervisor.stop('signal');
+    readline.close();
+    agent.stop();
+  };
+  process.once('SIGINT', shutdown);
+  process.once('SIGTERM', shutdown);
+
   console.log('Layra interactive session. Type /help or /exit.');
-  readline.prompt();
-  for await (const line of readline) {
-    const prompt = line.trim();
-    if (!prompt) { readline.prompt(); continue; }
-    if (prompt === '/exit' || prompt === '/quit') break;
-    if (prompt === '/help') { console.log('/help, /exit, /status'); readline.prompt(); continue; }
-    if (prompt === '/status') { console.log(JSON.stringify(agent.getStatistics(), null, 2)); readline.prompt(); continue; }
-    const result = await agent.runInteractiveTurn(prompt);
-    if (result.stoppedReason === 'no_model') console.error('No model API key is configured.');
-    else console.log(`layra> ${result.content || `[stopped: ${result.stoppedReason}]`}`);
-    readline.prompt();
+
+  try {
+    while (!shuttingDown) {
+      const line = await new Promise<string>(resolve => {
+        readline.question('you> ', answer => resolve(answer));
+      });
+
+      const prompt = line.trim();
+      if (!prompt) continue;
+      if (prompt === '/exit' || prompt === '/quit') break;
+      if (prompt === '/help') { console.log('/help, /exit, /status'); continue; }
+      if (prompt === '/status') { console.log(JSON.stringify(agent.getStatistics(), null, 2)); continue; }
+
+      const result = await agent.runInteractiveTurn(prompt);
+      if (shuttingDown) break;
+      if (result.stoppedReason === 'no_model') console.error('No model API key is configured.');
+      else console.log(`layra> ${result.content || `[stopped: ${result.stoppedReason}]`}`);
+    }
+  } finally {
+    shutdown();
   }
-  shutdown();
 }
 
 async function runTelegram(): Promise<void> {
