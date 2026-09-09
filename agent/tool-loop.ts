@@ -2,7 +2,7 @@ import { ChatMessage, createModelClient, ModelClient } from '../config/model-pro
 import { ToolExecutor } from '../tools/executor';
 import { ToolRegistry } from '../tools/registry';
 import { compressMessages } from '../core/context';
-import { normalizeToolResult, extractModelTurn } from '../core/tool-protocol';
+import { normalizeToolResult, extractModelTurn, toProviderToolName } from '../core/tool-protocol';
 
 export interface ToolLoopOptions { maxRounds?: number; maxToolCallsPerRound?: number; signal?: AbortSignal; client?: ModelClient; }
 export interface ToolLoopResult { content: string; rounds: number; toolCalls: number; stoppedReason: 'completed' | 'no_model' | 'aborted' | 'round_limit' | 'tool_error'; messages: ChatMessage[]; }
@@ -58,7 +58,7 @@ export async function runToolLoop(initialMessages: ChatMessage[], registry: Tool
       messages.push({
         role: 'tool',
         tool_call_id: call.id,
-        name: call.name,
+        name: toProviderToolName(call.name),
         content: normalizeToolResult({ success: result.success, result: result.result, error: result.error })
       });
     }
@@ -70,7 +70,7 @@ export async function runToolLoop(initialMessages: ChatMessage[], registry: Tool
       messages.push({
         role: 'tool',
         tool_call_id: call.id,
-        name: call.name,
+        name: toProviderToolName(call.name),
         content: normalizeToolResult({ success: false, result: null, error: `Tool-call budget exceeded (${maxCalls} calls per round)` })
       });
     }
