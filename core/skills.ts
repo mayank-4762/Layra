@@ -13,7 +13,7 @@ export class SkillStore {
     ];
   }
 
-  async list(): Promise<Array<Pick<Skill, 'name' | 'description' | 'path'>> {
+  async list(): Promise<Array<Pick<Skill, 'name' | 'description' | 'path'>>> {
     const skills: Array<Pick<Skill, 'name' | 'description' | 'path'>> = [];
     for (const root of this.roots) {
       for (const name of await this.directories(root)) {
