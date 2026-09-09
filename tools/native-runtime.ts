@@ -72,6 +72,7 @@ export class NativeRuntime {
     signal?.addEventListener('abort', forwardAbort, { once: true });
     try {
       const response = await fetch(url, { method: 'GET', redirect: 'follow', signal: controller.signal, headers: { 'User-Agent': 'Layra/3.0' } });
+      if (!['http:', 'https:'].includes(new URL(response.url).protocol)) throw new Error('Redirected response uses a non-HTTP(S) URL');
       const text = await response.text();
       return { value: { status: response.status, ok: response.ok, url: response.url, headers: Object.fromEntries(response.headers.entries()), body: text.slice(0, Math.max(1000, Math.min(200000, Number(input.maxBytes || 50000)))) }, metadata: { executor: 'native-http' } };
     } finally {
@@ -93,8 +94,7 @@ export class NativeRuntime {
       const body = typeof input.data === 'string' ? input.data : JSON.stringify(input.data ?? null);
       const headers = { 'Content-Type': 'application/json', 'User-Agent': 'Layra/3.0', ...(input.headers || {}) };
       const response = await fetch(url, { method: 'POST', headers, body, redirect: 'manual', signal: controller.signal });
-      const text = await response.text();
-      return { value: { status: response.status, ok: response.ok, url: response.url, headers: Object.fromEntries(response.headers.entries()), body: text.slice(0, 200000) }, metadata: { executor: 'native-http' } };
+      return { value: { status: response.status, ok: response.ok, url: response.url, headers: Object.fromEntries(response.headers.entries()), body: (await response.text()).slice(0, 200000) }, metadata: { executor: 'native-http' } };
     } finally {
       clearTimeout(timer);
       signal?.removeEventListener('abort', forwardAbort);
@@ -127,9 +127,24 @@ export class NativeRuntime {
     if (denied.some(pattern => pattern.test(command))) throw new Error('Command rejected by Layra execution safety policy');
   }
 
+  private shellEnvironment(): NodeJS.ProcessEnv {
+    const env: NodeJS.ProcessEnv = {};
+    const allow = new Set(['PATH', 'HOME', 'PWD', 'OLDPWD', 'TERM', 'LANG', 'LC_ALL', 'TMPDIR', 'PREFIX', 'ANDROID_ROOT', 'ANDROID_DATA', 'SHELL', 'USER', 'USERNAME', 'LOGNAME', 'NODE_PATH']);
+    for (const [key, value] of Object.entries(process.env)) if (allow.has(key) || key.startsWith('LAYRA_')) env[key] = value;
+    delete env.NVIDIA_API_KEY;
+    delete env.DEEPSEEK_API_KEY;
+    delete env.OPENROUTER_API_KEY;
+    delete env.OPENAI_API_KEY;
+    delete env.ANTHROPIC_API_KEY;
+    delete env.GOOGLE_API_KEY;
+    delete env.GEMINI_API_KEY;
+    return env;
+  }
+
   private runProcess(command: string, cwd: string, timeoutMs: number, signal?: AbortSignal): Promise<NativeExecutionResult> {
     return new Promise((resolve, reject) => {
-      const child = spawn('/bin/sh', ['-lc', command], { cwd, env: process.env, stdio: ['ignore', 'pipe', 'pipe'] });
+      const shell = process.env.SHELL || (process.env.PREFIX ? path.join(process.env.PREFIX, 'bin', 'sh') : '/bin/sh');
+      const child = spawn(shell, ['-lc', command], { cwd, env: this.shellEnvironment(), stdio: ['ignore', 'pipe', 'pipe'] });
       let stdout = '';
       let stderr = '';
       let settled = false;
