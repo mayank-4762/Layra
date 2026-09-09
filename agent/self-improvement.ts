@@ -14,13 +14,13 @@ export interface ImprovementCandidate {
   id: string; kind: ImprovementKind; title: string; rationale: string; change: string;
   evidence: ImprovementEvidence[]; confidence: number; reversible: boolean; status: ImprovementStatus;
   createdAt: string; validatedAt?: string; promotedAt?: string; rollbackOf?: string;
-  targetSkill?: string; previousSkillContent?: string | null;
+  targetSkill?: string; previousSkillContent?: string | null; sourceGoal?: string;
 }
 
 interface ImprovementState {
-  version: 2; candidates: ImprovementCandidate[]; promotedCount: number; rejectedCount: number;
+  version: 3; candidates: ImprovementCandidate[]; promotedCount: number; rejectedCount: number;
   rollbackCount: number; lastRunAt: string | null; successfulReuseCount: number; regressionCount: number;
-  lastCuratorRunAt: string | null;
+  lastCuratorRunAt: string | null; reuseEvaluations: number;
 }
 
 export interface SelfImprovementOptions {
@@ -29,7 +29,13 @@ export interface SelfImprovementOptions {
   enabled?: boolean; apply?: boolean; minConfidence?: number; minEvidence?: number; maxCandidates?: number;
 }
 
-/** Native Layra closed learning loop: observe -> diagnose -> propose -> validate -> promote -> measure. */
+export interface GoalOutcomeEvaluation {
+  evaluated: string[];
+  improved: string[];
+  regressed: string[];
+}
+
+/** Native Layra closed learning loop: observe -> diagnose -> propose -> validate -> promote -> measure -> reuse/rollback. */
 export class SelfImprovementEngine {
   private readonly stateDir: string;
   private readonly file: string;
@@ -44,8 +50,8 @@ export class SelfImprovementEngine {
   private readonly minEvidence: number;
   private readonly maxCandidates: number;
   private state: ImprovementState = {
-    version: 2, candidates: [], promotedCount: 0, rejectedCount: 0, rollbackCount: 0,
-    lastRunAt: null, successfulReuseCount: 0, regressionCount: 0, lastCuratorRunAt: null
+    version: 3, candidates: [], promotedCount: 0, rejectedCount: 0, rollbackCount: 0,
+    lastRunAt: null, successfulReuseCount: 0, regressionCount: 0, lastCuratorRunAt: null, reuseEvaluations: 0
   };
   private loaded = false;
 
@@ -70,12 +76,16 @@ export class SelfImprovementEngine {
       const parsed = JSON.parse(await fs.readFile(this.file, 'utf8')) as Partial<ImprovementState>;
       if (Array.isArray(parsed?.candidates)) {
         this.state = {
-          version: 2,
-          candidates: parsed.candidates.filter(this.validCandidate).map(item => ({ ...item, previousSkillContent: item.previousSkillContent ?? null })),
+          version: 3,
+          candidates: parsed.candidates.filter(this.validCandidate).map(item => ({
+            ...item,
+            previousSkillContent: item.previousSkillContent ?? null,
+            sourceGoal: item.sourceGoal || undefined
+          })),
           promotedCount: Number(parsed.promotedCount || 0), rejectedCount: Number(parsed.rejectedCount || 0),
           rollbackCount: Number(parsed.rollbackCount || 0), lastRunAt: parsed.lastRunAt || null,
           successfulReuseCount: Number(parsed.successfulReuseCount || 0), regressionCount: Number(parsed.regressionCount || 0),
-          lastCuratorRunAt: parsed.lastCuratorRunAt || null
+          lastCuratorRunAt: parsed.lastCuratorRunAt || null, reuseEvaluations: Number(parsed.reuseEvaluations || 0)
         };
       }
     } catch (error: any) {
@@ -90,10 +100,15 @@ export class SelfImprovementEngine {
     await this.load();
     if (!this.enabled) return [];
     const evidence = input.evidence.slice(-20);
-    const candidates = this.model
+    let candidates = this.model
       ? await this.modelCandidates(input.goal, input.success, evidence, input.failures || [], input.lessons || [], input.skillsUsed || [])
       : this.deterministicCandidates(input.goal, input.success, evidence, input.failures || [], input.lessons || [], input.skillsUsed || []);
-    const bounded = candidates.slice(0, this.maxCandidates).map(candidate => this.normalizeCandidate(candidate, evidence));
+
+    if (input.success && input.skillsUsed?.length && input.evidence.length >= this.minEvidence && !candidates.some(item => item.kind === 'skill')) {
+      candidates = [...candidates, ...this.deterministicCandidates(input.goal, true, evidence, [], input.lessons || [], input.skillsUsed || []).filter(item => item.kind === 'skill')];
+    }
+
+    const bounded = candidates.slice(0, this.maxCandidates).map(candidate => this.normalizeCandidate(candidate, evidence, input.goal));
     this.state.candidates.push(...bounded);
     this.state.candidates = this.state.candidates.slice(-200);
     this.state.lastRunAt = new Date().toISOString();
@@ -117,6 +132,28 @@ export class SelfImprovementEngine {
       await this.persist();
     }
     return results;
+  }
+
+  /** Evaluate a completed goal against improvements that were already promoted before this goal began. */
+  async evaluateGoalOutcome(goal: string, success: boolean, evidence: ImprovementEvidence[], skillsUsed: string[] = [], startedAt?: string | number): Promise<GoalOutcomeEvaluation> {
+    await this.load();
+    if (!this.enabled) return { evaluated: [], improved: [], regressed: [] };
+    const startMs = typeof startedAt === 'number' ? startedAt : Date.parse(String(startedAt || ''));
+    const threshold = Number.isFinite(startMs) ? startMs : Date.now();
+    const relevant = this.state.candidates.filter(candidate => candidate.status === 'promoted'
+      && candidate.promotedAt
+      && Date.parse(candidate.promotedAt) < threshold
+      && this.isRelevant(candidate, goal, skillsUsed));
+    const outcome: GoalOutcomeEvaluation = { evaluated: [], improved: [], regressed: [] };
+    for (const candidate of relevant.slice(-20)) {
+      outcome.evaluated.push(candidate.id);
+      const reuseImproved = success && evidence.some(item => item.success);
+      if (reuseImproved) outcome.improved.push(candidate.id); else outcome.regressed.push(candidate.id);
+      await this.recordReuse(candidate.id, reuseImproved);
+    }
+    this.state.reuseEvaluations += outcome.evaluated.length;
+    await this.persist();
+    return outcome;
   }
 
   async validate(candidate: ImprovementCandidate): Promise<boolean> {
@@ -171,8 +208,13 @@ export class SelfImprovementEngine {
     await this.load();
     const candidate = this.state.candidates.find(item => item.id === candidateId);
     if (!candidate || candidate.status !== 'promoted') return false;
-    if (improved) this.state.successfulReuseCount += 1;
-    else { this.state.regressionCount += 1; await this.rollback(candidateId, 'Post-promotion evaluation regressed.'); }
+    if (improved) {
+      this.state.successfulReuseCount += 1;
+      await this.memory.remember({ kind: 'event', content: `Self-improvement ${candidateId} was reused successfully.`, tags: ['self-improvement', 'reuse'], importance: 7, source: candidateId });
+    } else {
+      this.state.regressionCount += 1;
+      await this.rollback(candidateId, 'Post-promotion evaluation regressed.');
+    }
     await this.persist();
     return true;
   }
@@ -231,7 +273,9 @@ export class SelfImprovementEngine {
       enabled: this.enabled, apply: this.apply, minConfidence: this.minConfidence, minEvidence: this.minEvidence,
       candidates: this.state.candidates.length, promoted: this.state.promotedCount, rejected: this.state.rejectedCount,
       rolledBack: this.state.rollbackCount, successfulReuse: this.state.successfulReuseCount,
-      regressions: this.state.regressionCount, learnedSkills: this.state.candidates.filter(item => item.kind === 'skill' && item.status === 'promoted').length,
+      regressions: this.state.regressionCount, reuseEvaluations: this.state.reuseEvaluations,
+      learnedSkills: this.state.candidates.filter(item => item.kind === 'skill' && item.status === 'promoted').length,
+      activePromoted: this.state.candidates.filter(item => item.status === 'promoted').length,
       lastRunAt: this.state.lastRunAt, lastCuratorRunAt: this.state.lastCuratorRunAt
     };
   }
@@ -265,13 +309,13 @@ export class SelfImprovementEngine {
     return out;
   }
 
-  private normalizeCandidate(candidate: Partial<ImprovementCandidate>, evidence: ImprovementEvidence[]): ImprovementCandidate {
+  private normalizeCandidate(candidate: Partial<ImprovementCandidate>, evidence: ImprovementEvidence[], sourceGoal: string): ImprovementCandidate {
     return {
       id: `imp_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`, kind: candidate.kind || 'knowledge',
       title: String(candidate.title || 'Untitled improvement').slice(0, 160), rationale: String(candidate.rationale || '').slice(0, 1200),
       change: String(candidate.change || '').slice(0, 12000), evidence: evidence.slice(-20), confidence: clamp(Number(candidate.confidence ?? 0.5), 0, 1),
       reversible: candidate.reversible !== false, status: 'proposed', createdAt: new Date().toISOString(), targetSkill: candidate.targetSkill,
-      previousSkillContent: candidate.previousSkillContent ?? null
+      previousSkillContent: candidate.previousSkillContent ?? null, sourceGoal: String(candidate.sourceGoal || sourceGoal).slice(0, 500)
     };
   }
 
@@ -288,6 +332,17 @@ export class SelfImprovementEngine {
     return candidate.evidence.every((item: any) => item && typeof item.id === 'string' && typeof item.type === 'string' && typeof item.summary === 'string' && typeof item.success === 'boolean');
   };
 
+  private isRelevant(candidate: ImprovementCandidate, goal: string, skillsUsed: string[]): boolean {
+    if (candidate.targetSkill && skillsUsed.includes(candidate.targetSkill)) return true;
+    const source = tokenize(candidate.sourceGoal || candidate.title);
+    const current = tokenize(goal);
+    if (!source.size || !current.size) return false;
+    let shared = 0;
+    for (const token of current) if (source.has(token)) shared += 1;
+    const union = new Set([...source, ...current]).size;
+    return shared >= 2 && shared / union >= 0.25;
+  }
+
   private async persist(): Promise<void> {
     await fs.mkdir(this.stateDir, { recursive: true });
     const temp = `${this.file}.${process.pid}.tmp`;
@@ -302,7 +357,7 @@ export class SelfImprovementEngine {
     const boundary = candidate.kind === 'code'
       ? ['## Validation Boundary', '- Review the proposed diff in isolation.', '- Run typecheck, build, and the relevant test suite in an isolated worktree.', '- Verify the intended behavior from fresh evidence.', '- Revert the isolated change completely on regression.', '']
       : [];
-    const body = [`# ${candidate.title}`, '', `- ID: ${candidate.id}`, `- Kind: ${candidate.kind}`, `- Status: ${candidate.status}`, `- Confidence: ${candidate.confidence.toFixed(2)}`, `- Evidence count: ${candidate.evidence.length}`, `- Reversible: ${candidate.reversible}`, '', '## Rationale', candidate.rationale, '', '## Proposed Change', candidate.kind === 'code' ? '```diff' : '```text', candidate.change, '```', '', ...boundary, '## Evidence', ...candidate.evidence.map(item => `- ${item.id}: ${item.summary} (success=${item.success})`), ''].join('\n');
+    const body = [`# ${candidate.title}`, '', `- ID: ${candidate.id}`, `- Kind: ${candidate.kind}`, `- Status: ${candidate.status}`, `- Confidence: ${candidate.confidence.toFixed(2)}`, `- Evidence count: ${candidate.evidence.length}`, `- Reversible: ${candidate.reversible}`, `- Source goal: ${candidate.sourceGoal || 'unknown'}`, '', '## Rationale', candidate.rationale, '', '## Proposed Change', candidate.kind === 'code' ? '```diff' : '```text', candidate.change, '```', '', ...boundary, '## Evidence', ...candidate.evidence.map(item => `- ${item.id}: ${item.summary} (success=${item.success})`), ''].join('\n');
     const temp = `${file}.${process.pid}.tmp`;
     await fs.writeFile(temp, body, 'utf8');
     await fs.rename(temp, file);
@@ -344,4 +399,8 @@ function normalizeSkillContent(content: string): string {
 }
 function clamp(value: number, min: number, max: number): number { return Number.isFinite(value) ? Math.max(min, Math.min(max, value)) : min; }
 function slug(value: string): string { return String(value).toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, ''); }
+function tokenize(value: string): Set<string> {
+  const stop = new Set(['the','a','an','and','or','to','of','for','on','in','with','from','then','when','this','that','is','are','be','by','into','your','layra']);
+  return new Set(String(value).toLowerCase().split(/[^a-z0-9]+/).filter(item => item.length >= 3 && !stop.has(item)));
+}
 function parseJson(value: string): any { const text = String(value || '').trim().replace(/^```(?:json)?/i, '').replace(/```$/i, '').trim(); try { return JSON.parse(text); } catch { const start = text.indexOf('{'); const end = text.lastIndexOf('}'); if (start >= 0 && end > start) { try { return JSON.parse(text.slice(start, end + 1)); } catch {} } return null; } }
