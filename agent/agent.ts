@@ -10,6 +10,7 @@ import { MemoryStore } from '../core/memory';
 import { SkillStore } from '../core/skills';
 import { SelfImprovementEngine, ImprovementEvidence } from './self-improvement';
 import { runToolLoop, ToolLoopResult } from './tool-loop';
+import { attemptedSkills, normalizeSkillRefs, recordSkillUsage, successfulSkills, SkillUsageEvidence } from './skill-attribution';
 
 /** Layra is one runtime: reasoning, planning, action, memory, evaluation and learning share the same state. */
 export class HybridAgent {
@@ -121,6 +122,8 @@ export class HybridAgent {
       this.currentGoalStartedAt = Date.now();
     }
     this.state.currentPlan = [];
+    this.state.shortTermMemory.skillExecutionEvidence = [];
+    this.state.shortTermMemory.relevantSkillsForGoal = [];
     this.tasksThisRun = 0;
     this.replansThisGoal = 0;
     this.state.activeTasks = [];
@@ -150,6 +153,8 @@ export class HybridAgent {
       this.tasksThisRun = 0;
       this.replansThisGoal = 0;
       this.state.currentPlan = [];
+      this.state.shortTermMemory.skillExecutionEvidence = [];
+      this.state.shortTermMemory.relevantSkillsForGoal = [];
     }
     if (!this.state.currentGoal) return false;
     if (this.tasksThisRun >= this.maxTasksPerRun) {
@@ -166,7 +171,7 @@ export class HybridAgent {
       this.state.currentPlan = plan.steps.map(step => ({ ...step, status: PlanStepStatus.PENDING, actualDuration: null, result: null, error: null }));
       this.state.planningHistory.push([...this.state.currentPlan]);
       this.replansThisGoal += 1;
-      await this.sessionStore.event('plan_generated', `Generated ${this.state.currentPlan.length}-step plan`, { confidence: plan.confidence, reasoning: plan.reasoning, risk: this.hermesPlanner.calculatePlanRisk(plan), replanNumber: this.replansThisGoal, skillsConsidered: this.state.shortTermMemory.relevantSkillsForGoal || [] });
+      await this.sessionStore.event('plan_generated', `Generated ${this.state.currentPlan.length}-step plan`, { confidence: plan.confidence, reasoning: plan.reasoning, risk: this.hermesPlanner.calculatePlanRisk(plan), replanNumber: this.replansThisGoal, skillsConsidered: this.state.shortTermMemory.relevantSkillsForGoal || [], stepSkills: this.state.currentPlan.map(step => ({ id: step.id, skillRefs: step.skillRefs || [] })) });
       if (!this.state.currentPlan.length) { await this.requestReplan('Planner returned no executable steps'); return true; }
     }
     const ready = this.readySteps();
@@ -197,24 +202,29 @@ export class HybridAgent {
   }
 
   private async executeStep(step: any): Promise<void> {
+    const skillRefs = normalizeSkillRefs(step.skillRefs);
+    step.skillRefs = skillRefs;
     step.status = PlanStepStatus.IN_PROGRESS;
     const started = Date.now();
-    this.state.activeTasks.push({ id: `task_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`, goal: this.state.currentGoal || '', description: step.description, priority: step.priority, status: TaskStatus.IN_PROGRESS, createdAt: new Date(started), startedAt: new Date(started), completedAt: null, assignedTo: step.tool, result: null, error: null, dependencies: [...step.dependsOn], metadata: { stepId: step.id } });
-    await this.sessionStore.event('task_started', step.description, { tool: step.tool, stepId: step.id });
+    this.state.activeTasks.push({ id: `task_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`, goal: this.state.currentGoal || '', description: step.description, priority: step.priority, status: TaskStatus.IN_PROGRESS, createdAt: new Date(started), startedAt: new Date(started), completedAt: null, assignedTo: step.tool, result: null, error: null, dependencies: [...step.dependsOn], metadata: { stepId: step.id, skillRefs } });
+    await this.sessionStore.event('task_started', step.description, { tool: step.tool, stepId: step.id, skillRefs });
     const result = await this.toolExecutor.executeWithTimeout(step.tool, step.parameters, Math.max(5000, step.estimatedDuration * 2000));
     step.actualDuration = Date.now() - started;
     step.result = result.result; step.error = result.error;
     step.status = result.success ? PlanStepStatus.COMPLETED : PlanStepStatus.FAILED;
     this.tasksThisRun += 1;
-    const task: Task = { id: `task_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`, goal: this.state.currentGoal || '', description: step.description, priority: step.priority, status: result.success ? TaskStatus.COMPLETED : TaskStatus.FAILED, createdAt: new Date(started), startedAt: new Date(started), completedAt: new Date(), assignedTo: step.tool, result: result.result, error: result.error, dependencies: [...step.dependsOn], metadata: { stepId: step.id, executor: result.metadata?.executor || 'unknown' } };
+    const usage = recordSkillUsage(this.state.shortTermMemory.skillExecutionEvidence as SkillUsageEvidence[] | undefined, skillRefs, step.id, result.success);
+    this.state.shortTermMemory.skillExecutionEvidence = usage;
+    if (skillRefs.length) await this.sessionStore.event('skill_execution_recorded', `Recorded ${skillRefs.length} skill reference(s) after step execution.`, { stepId: step.id, skillRefs, success: result.success });
+    const task: Task = { id: `task_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`, goal: this.state.currentGoal || '', description: step.description, priority: step.priority, status: result.success ? TaskStatus.COMPLETED : TaskStatus.FAILED, createdAt: new Date(started), startedAt: new Date(started), completedAt: new Date(), assignedTo: step.tool, result: result.result, error: result.error, dependencies: [...step.dependsOn], metadata: { stepId: step.id, executor: result.metadata?.executor || 'unknown', skillRefs } };
     const activeIndex = this.state.activeTasks.findIndex(item => item.status === TaskStatus.IN_PROGRESS && item.metadata?.stepId === step.id);
     if (activeIndex >= 0) this.state.activeTasks.splice(activeIndex, 1);
     if (result.success) {
       this.state.completedTasks.push(task);
-      await this.sessionStore.event('task_completed', step.description, { stepId: step.id, tool: step.tool, result: this.safeEvidence(result.result) });
+      await this.sessionStore.event('task_completed', step.description, { stepId: step.id, tool: step.tool, result: this.safeEvidence(result.result), skillRefs });
     } else {
       this.state.failedTasks.push(task);
-      await this.sessionStore.event('task_failed', step.description, { stepId: step.id, error: result.error });
+      await this.sessionStore.event('task_failed', step.description, { stepId: step.id, error: result.error, skillRefs });
       this.state.currentPlan = [];
     }
   }
@@ -228,9 +238,9 @@ export class HybridAgent {
         { role: 'user', content: JSON.stringify({ goal: this.state.currentGoal, step, lastAction: this.state.lastActionResult, recentActions: this.state.executionHistory.slice(-5), lessons: (this.state.longTermMemory?.lessons || []).slice(-10) }) }
       ], { temperature: 0.1, maxTokens: 450 });
       this.state.shortTermMemory.lastReasoning = response.content;
-      const reflection: Reflection = { id: `reason_${Date.now()}`, type: ReflectionType.INSIGHT, content: response.content, confidence: 0.8, source: [step.id], createdAt: new Date(), metadata: { source: client.provider } };
+      const reflection: Reflection = { id: `reason_${Date.now()}`, type: ReflectionType.INSIGHT, content: response.content, confidence: 0.8, source: [step.id], createdAt: new Date(), metadata: { source: client.provider, skillRefs: step.skillRefs || [] } };
       this.state.reflections.push(reflection);
-      await this.sessionStore.event('reflection_generated', reflection.content, { source: client.provider, stepId: step.id });
+      await this.sessionStore.event('reflection_generated', reflection.content, { source: client.provider, stepId: step.id, skillRefs: step.skillRefs || [] });
       const decision = this.parseJson(response.content);
       if (decision?.shouldReplan === true) await this.requestReplan(String(decision.reason || 'Reasoning requested a replan'));
     } catch (error) {
@@ -259,16 +269,18 @@ export class HybridAgent {
     const goal = this.state.currentGoal;
     if (!goal) return false;
     const evidence: ImprovementEvidence[] = this.state.currentPlan.map(step => ({ id: step.id, type: 'goal-step', summary: `${step.description}: ${step.expectedOutcome || 'completed'}`, success: step.status === PlanStepStatus.COMPLETED && !step.error }));
-    const verification = await this.dhsIntelligence.verifyGoal(goal, this.state.currentPlan.map(step => ({ id: step.id, description: step.description, expectedOutcome: step.expectedOutcome, status: step.status, result: this.safeEvidence(step.result), error: step.error })));
+    const verification = await this.dhsIntelligence.verifyGoal(goal, this.state.currentPlan.map(step => ({ id: step.id, description: step.description, expectedOutcome: step.expectedOutcome, status: step.status, result: this.safeEvidence(step.result), error: step.error, skillRefs: step.skillRefs || [] })));
     this.state.shortTermMemory.goalVerification = verification;
     const lessons = (this.state.longTermMemory.lessons || []).slice(-10).map((item: any) => typeof item === 'string' ? item : String(item?.content || '')).filter(Boolean);
     const failures = this.state.failedTasks.slice(-10).map(task => String(task.error || task.description)).filter(Boolean);
-    const skillsUsed = Array.isArray(this.state.shortTermMemory.relevantSkillsForGoal) ? this.state.shortTermMemory.relevantSkillsForGoal.map(String) : [];
+    const skillUsage = Array.isArray(this.state.shortTermMemory.skillExecutionEvidence) ? this.state.shortTermMemory.skillExecutionEvidence as SkillUsageEvidence[] : [];
+    const skillsUsed = successfulSkills(skillUsage);
+    const attempted = attemptedSkills(skillUsage);
     const evaluation = await this.selfImprovement.evaluateGoalOutcome(goal, verification.achieved, evidence, skillsUsed, this.currentGoalStartedAt).catch(error => {
       this.state.shortTermMemory.selfImprovementReuseError = error instanceof Error ? error.message : String(error);
       return { evaluated: [], improved: [], regressed: [] };
     });
-    this.state.shortTermMemory.lastSelfImprovementEvaluation = evaluation;
+    this.state.shortTermMemory.lastSelfImprovementEvaluation = { ...evaluation, skillUsage: skillUsage.slice(-20), successfulSkills: skillsUsed, attemptedSkills: attempted };
     if (!verification.achieved) {
       await this.selfImprovement.observe({ goal, success: false, evidence, failures: [verification.reason, verification.nextAction || '', ...failures].filter(Boolean), lessons, skillsUsed }).catch(error => { this.state.shortTermMemory.selfImprovementError = error instanceof Error ? error.message : String(error); });
       await this.requestReplan(`Goal verification rejected completion: ${verification.reason}${verification.nextAction ? ` Next: ${verification.nextAction}` : ''}`);
@@ -286,7 +298,8 @@ export class HybridAgent {
     this.tasksThisRun = 0;
     this.replansThisGoal = 0;
     this.state.shortTermMemory.relevantSkillsForGoal = [];
-    await this.sessionStore.event('goal_completed', `Goal verified: ${goal}`, { ...verification, selfImprovement: { evaluated: evaluation.evaluated.length, improved: evaluation.improved.length, regressed: evaluation.regressed.length, newCandidates: improvements.length } });
+    this.state.shortTermMemory.skillExecutionEvidence = [];
+    await this.sessionStore.event('goal_completed', `Goal verified: ${goal}`, { ...verification, selfImprovement: { evaluated: evaluation.evaluated.length, improved: evaluation.improved.length, regressed: evaluation.regressed.length, newCandidates: improvements.length }, skillUsage: skillUsage.slice(-20), successfulSkills: skillsUsed, attemptedSkills: attempted });
     return true;
   }
 
