@@ -240,7 +240,7 @@ export class SelfImprovementEngine {
     return this.apply && candidate.kind !== 'code' && candidate.confidence >= this.minConfidence && candidate.evidence.length >= this.minEvidence;
   }
 
-  private async modelCandidates(goal: string, success: boolean, evidence: ImprovementEvidence[], failures: string[], lessons: string[], skillsUsed: string[]): Promise<ImprovementCandidate[]> {
+  private async modelCandidates(goal: string, success: boolean, evidence: ImprovementEvidence[], failures: string[], lessons: string[], skillsUsed: string[]): Promise<Array<Partial<ImprovementCandidate>>> {
     try {
       const response = await this.model!.chat([
         { role: 'system', content: 'You are Layra self-improvement. Analyze evidence only. Propose at most 3 reversible, low-risk improvements. Code candidates are proposal-only and must include a diff/patch plus explicit test, typecheck/build, verification, and rollback boundaries. Prefer reusable knowledge, skills, and strategies. Return strict JSON: {"candidates":[{"kind":"knowledge|skill|strategy|code","title":"","rationale":"","change":"","confidence":0-1,"reversible":true}]}. Skill candidates must include a YAML line `name: learned-name` and a `## Verification` section.' },
@@ -273,6 +273,27 @@ export class SelfImprovementEngine {
       reversible: candidate.reversible !== false, status: 'proposed', createdAt: new Date().toISOString(), targetSkill: candidate.targetSkill,
       previousSkillContent: candidate.previousSkillContent ?? null
     };
+  }
+
+  private readonly validCandidate = (candidate: any): candidate is ImprovementCandidate => {
+    if (!candidate || typeof candidate !== 'object') return false;
+    if (typeof candidate.id !== 'string' || !candidate.id) return false;
+    if (!['knowledge', 'skill', 'strategy', 'code'].includes(candidate.kind)) return false;
+    if (typeof candidate.title !== 'string' || typeof candidate.rationale !== 'string' || typeof candidate.change !== 'string') return false;
+    if (!Array.isArray(candidate.evidence)) return false;
+    if (typeof candidate.confidence !== 'number' || !Number.isFinite(candidate.confidence) || candidate.confidence < 0 || candidate.confidence > 1) return false;
+    if (typeof candidate.reversible !== 'boolean') return false;
+    if (!['proposed', 'validated', 'promoted', 'rejected', 'rolled_back'].includes(candidate.status)) return false;
+    if (typeof candidate.createdAt !== 'string' || !candidate.createdAt) return false;
+    return candidate.evidence.every((item: any) => item && typeof item.id === 'string' && typeof item.type === 'string' && typeof item.summary === 'string' && typeof item.success === 'boolean');
+  };
+
+  private async persist(): Promise<void> {
+    await fs.mkdir(this.stateDir, { recursive: true });
+    const temp = `${this.file}.${process.pid}.tmp`;
+    const body = JSON.stringify(this.state, null, 2);
+    await fs.writeFile(temp, body, 'utf8');
+    await fs.rename(temp, this.file);
   }
 
   private async writeProposal(candidate: ImprovementCandidate): Promise<void> {
