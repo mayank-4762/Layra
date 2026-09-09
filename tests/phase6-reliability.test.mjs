@@ -7,7 +7,6 @@ import path from 'node:path';
 const { Phase6ReliabilitySupervisor } = await import('../dist/agent/reliability.js');
 
 function makeState() {
-  const startedAt = new Date(Date.now() - 5);
   return {
     id: 'phase6-test-state',
     currentGoal: 'verify reliability',
@@ -28,12 +27,11 @@ test('Phase 6 persists a validated checkpoint and records outcome scores', async
   const agent = { getState: () => state, stop: () => { agent.stopped = true; }, stopped: false };
   const supervisor = new Phase6ReliabilitySupervisor(agent, { checkpointPath, intervalMs: 10 });
 
+  supervisor.start();
   state.completedTasks.push({ id: 't1', description: 'success', assignedTo: 'system.info', status: 'completed' });
   state.failedTasks.push({ id: 't2', description: 'failure', assignedTo: 'system.info', status: 'failed', error: 'expected test failure' });
   state.totalActions = 2;
   state.successRate = 0.5;
-
-  supervisor.start();
   await new Promise(resolve => setTimeout(resolve, 40));
   await supervisor.stop('test_complete');
 
