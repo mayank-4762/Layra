@@ -1,7 +1,7 @@
 import { AgentState, PlanStepStatus, Reflection, ReflectionType, Task, TaskStatus } from './state';
 import { GoalTaskManager } from './goal-task-manager';
 import { ToolRegistry } from '../tools/registry';
-import { ToolExecutor, ToolExecutionResult } from '../tools/executor';
+import { ToolExecutor } from '../tools/executor';
 import { HermesPlanner } from './hermes-planner';
 import { DHSIntelligence } from '../intelligence/dhs';
 import { LayraSessionStore } from './layra-session';
@@ -118,30 +118,23 @@ export class HybridAgent {
       this.state.currentPlan = [];
     }
     if (!this.state.currentGoal) return false;
-
     if (this.tasksThisRun >= this.maxTasksPerRun) {
       this.tasksThisRun = 0;
       await this.sessionStore.event('action_budget_reset', `Starting another action batch for goal: ${this.state.currentGoal}`, { maxActionsPerRun: this.maxTasksPerRun });
     }
-
     if (!this.state.currentPlan.length) {
       if (this.replansThisGoal >= this.maxReplansPerGoal) {
         await this.sessionStore.writeReport(this.state, `Replanning limit reached for goal; preserving evidence for review: ${this.state.currentGoal}`);
         this.running = false;
         return false;
       }
-      const plan = await this.hermesPlanner.plan(this.state.currentGoal, {
-        memory: this.state.longTermMemory,
-        recentReflections: this.state.reflections.slice(-8),
-        recentActions: this.state.executionHistory.slice(-8)
-      });
+      const plan = await this.hermesPlanner.plan(this.state.currentGoal, { memory: this.state.longTermMemory, recentReflections: this.state.reflections.slice(-8), recentActions: this.state.executionHistory.slice(-8) });
       this.state.currentPlan = plan.steps.map(step => ({ ...step, status: PlanStepStatus.PENDING, actualDuration: null, result: null, error: null }));
       this.state.planningHistory.push([...this.state.currentPlan]);
       this.replansThisGoal += 1;
       await this.sessionStore.event('plan_generated', `Generated ${this.state.currentPlan.length}-step plan`, { confidence: plan.confidence, reasoning: plan.reasoning, risk: this.hermesPlanner.calculatePlanRisk(plan), replanNumber: this.replansThisGoal });
       if (!this.state.currentPlan.length) { await this.requestReplan('Planner returned no executable steps'); return true; }
     }
-
     const ready = this.readySteps();
     if (!ready.length) {
       const unfinished = this.state.currentPlan.some(item => item.status !== PlanStepStatus.COMPLETED && item.status !== PlanStepStatus.SKIPPED);
@@ -160,7 +153,6 @@ export class HybridAgent {
     const completed = new Set(this.state.currentPlan.filter(step => step.status === PlanStepStatus.COMPLETED).map(step => step.id));
     return this.state.currentPlan.filter(step => step.status === PlanStepStatus.PENDING && step.dependsOn.every(dep => completed.has(dep)));
   }
-
   private selectBatch(ready: any[], capacity: number): any[] {
     const selected: any[] = [];
     for (const step of ready.sort((a, b) => b.priority - a.priority)) {
@@ -212,10 +204,7 @@ export class HybridAgent {
     }
   }
 
-  private async requestReplan(reason: string): Promise<void> {
-    this.state.currentPlan = [];
-    await this.sessionStore.event('replan_requested', reason, { goal: this.state.currentGoal, replanNumber: this.replansThisGoal + 1 });
-  }
+  private async requestReplan(reason: string): Promise<void> { this.state.currentPlan = []; await this.sessionStore.event('replan_requested', reason, { goal: this.state.currentGoal, replanNumber: this.replansThisGoal + 1 }); }
 
   private async learn(batch: any[]): Promise<void> {
     if (!batch.some(step => step.status === PlanStepStatus.COMPLETED)) return;
@@ -236,14 +225,12 @@ export class HybridAgent {
   private async captureProcedureSkill(): Promise<void> {
     const goal = this.state.currentGoal || 'successful workflow';
     const name = `learned-${goal.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '').slice(0, 45) || 'workflow'}`;
-    const steps = this.state.completedTasks.slice(-8).map((task, i) => `${i + 1}. ${task.description} (tool: ${task.assignedTo || 'n/a'})`).join('\n');
-    const lessons = (this.state.longTermMemory.lessons || []).slice(-5).map(item => `- ${item}`).join('\n');
+    const steps = this.state.completedTasks.slice(-8).map((task: Task, i: number) => `${i + 1}. ${task.description} (tool: ${task.assignedTo || 'n/a'})`).join('\n');
+    const lessons = (this.state.longTermMemory.lessons || []).slice(-5).map((item: any) => `- ${String(item)}`).join('\n');
     try {
       await this.skillStore.upsert(name, `---\nname: ${name}\ndescription: Reusable workflow learned by Layra from successful execution.\n---\n\n# Procedure\n\n${steps}\n\n# Lessons\n\n${lessons || '- No durable lesson recorded.'}\n`);
       await this.sessionStore.event('skill_learned', `Saved procedural skill ${name}`, { name });
-    } catch (error) {
-      this.state.shortTermMemory.skillLearningError = error instanceof Error ? error.message : String(error);
-    }
+    } catch (error) { this.state.shortTermMemory.skillLearningError = error instanceof Error ? error.message : String(error); }
   }
 
   private async finishGoal(): Promise<boolean> {
@@ -252,10 +239,7 @@ export class HybridAgent {
     const evidence = this.state.currentPlan.map(step => ({ id: step.id, description: step.description, expectedOutcome: step.expectedOutcome, status: step.status, result: this.safeEvidence(step.result), error: step.error }));
     const verification = await this.dhsIntelligence.verifyGoal(goal, evidence);
     this.state.shortTermMemory.goalVerification = verification;
-    if (!verification.achieved) {
-      await this.requestReplan(`Goal verification rejected completion: ${verification.reason}${verification.nextAction ? ` Next: ${verification.nextAction}` : ''}`);
-      return true;
-    }
+    if (!verification.achieved) { await this.requestReplan(`Goal verification rejected completion: ${verification.reason}${verification.nextAction ? ` Next: ${verification.nextAction}` : ''}`); return true; }
     this.state.goalHistory.push(goal);
     await this.dhsIntelligence.generateGoalInsights(true, goal);
     await this.memoryStore.remember({ kind: 'event', content: `Verified goal completed: ${goal}`, tags: ['goal', 'verified'], importance: 9, source: 'DHS' });
@@ -267,13 +251,7 @@ export class HybridAgent {
     return true;
   }
 
-  private parseJson(content: string): any {
-    const candidate = content.match(/```(?:json)?\s*([\s\S]*?)\s*```/i)?.[1] || content;
-    const start = candidate.indexOf('{');
-    const end = candidate.lastIndexOf('}');
-    if (start < 0 || end <= start) throw new Error('Expected JSON decision');
-    return JSON.parse(candidate.slice(start, end + 1));
-  }
+  private parseJson(content: string): any { const candidate = content.match(/```(?:json)?\s*([\s\S]*?)\s*```/i)?.[1] || content; const start = candidate.indexOf('{'); const end = candidate.lastIndexOf('}'); if (start < 0 || end <= start) throw new Error('Expected JSON decision'); return JSON.parse(candidate.slice(start, end + 1)); }
   private safeEvidence(value: any): any { try { const text = JSON.stringify(value); return text.length > 12000 ? `${text.slice(0, 12000)}…` : value; } catch { return String(value); } }
   private sleep(ms: number): Promise<void> { return new Promise(resolve => setTimeout(resolve, ms)); }
 }
