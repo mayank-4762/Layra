@@ -10,13 +10,14 @@ import { BrowserCdp } from './browser-cdp';
 import { LayraMcpClient } from './mcp-client';
 import { LayraScheduler } from '../agent/scheduler';
 import { LayraDelegator } from '../agent/delegation';
+import { AndroidTermuxBridge } from './android-termux';
 import path from 'path';
 
 export interface ToolExecutionResult { success: boolean; result: any; error: string | null; executionTime: number; metadata?: Record<string, any>; }
 /** Single execution boundary for Layra; all capabilities remain in one runtime. */
 export class ToolExecutor {
-  private readonly toolRegistry: ToolRegistry; private readonly state: AgentState; private readonly runtime: NativeRuntime; private readonly processRegistry: ProcessRegistry; private readonly memoryStore: MemoryStore; private readonly browser: BrowserCdp; private readonly mcp: LayraMcpClient; private readonly scheduler: LayraScheduler; private readonly delegator: LayraDelegator;
-  constructor(toolRegistry: ToolRegistry, state: AgentState) { this.toolRegistry = toolRegistry; this.state = state; this.runtime = new NativeRuntime(); this.processRegistry = new ProcessRegistry(); this.memoryStore = new MemoryStore(); this.browser = new BrowserCdp(); this.mcp = new LayraMcpClient(); this.scheduler = new LayraScheduler(); this.delegator = new LayraDelegator(toolRegistry, this); }
+  private readonly toolRegistry: ToolRegistry; private readonly state: AgentState; private readonly runtime: NativeRuntime; private readonly processRegistry: ProcessRegistry; private readonly memoryStore: MemoryStore; private readonly browser: BrowserCdp; private readonly mcp: LayraMcpClient; private readonly scheduler: LayraScheduler; private readonly delegator: LayraDelegator; private readonly android: AndroidTermuxBridge;
+  constructor(toolRegistry: ToolRegistry, state: AgentState) { this.toolRegistry = toolRegistry; this.state = state; this.runtime = new NativeRuntime(); this.processRegistry = new ProcessRegistry(); this.memoryStore = new MemoryStore(); this.browser = new BrowserCdp(); this.mcp = new LayraMcpClient(); this.scheduler = new LayraScheduler(); this.delegator = new LayraDelegator(toolRegistry, this); this.android = new AndroidTermuxBridge(); }
   async execute(toolName: string, parameters: Record<string, any>, signal?: AbortSignal): Promise<ToolExecutionResult> {
     const startTime = Date.now(); let result: ToolExecutionResult;
     try { if (!this.toolRegistry.isToolAvailable(toolName)) result = this.fail(toolName, 'Tool is not available or permission is not granted', startTime); else if (signal?.aborted) result = this.fail(toolName, 'Execution aborted', startTime); else { await this.toolRegistry.runBeforeHooks(toolName, parameters, { signal, goal: this.state.currentGoal, sessionId: this.state.id }); result = await this.dispatch(toolName, parameters, startTime, signal); } }
@@ -45,15 +46,28 @@ export class ToolExecutor {
       case 'session.search': return this.ok(await searchSessionEvents(String(parameters.query || ''), Math.max(1, Number(parameters.limit || 20))), startTime, { executor: 'layra-session-search', persistent: true });
       case 'browser.navigate': return this.ok(await this.browser.navigate(String(parameters.url || ''), signal), startTime, { executor: 'chromium-cdp' });
       case 'browser.snapshot': return this.ok(await this.browser.snapshot(signal), startTime, { executor: 'chromium-cdp' });
+      case 'browser.accessibility': return this.ok(await this.browser.accessibilitySnapshot(signal), startTime, { executor: 'chromium-cdp' });
+      case 'browser.screenshot': return this.ok(await this.browser.screenshot(signal), startTime, { executor: 'chromium-cdp', binary: true });
+      case 'browser.tabs': return this.ok(await this.browser.listTabs(), startTime, { executor: 'chromium-cdp' });
       case 'browser.click': return this.ok(await this.browser.click(String(parameters.selector || ''), signal), startTime, { executor: 'chromium-cdp' });
       case 'browser.type': return this.ok(await this.browser.type(String(parameters.selector || ''), String(parameters.text || ''), signal), startTime, { executor: 'chromium-cdp' });
+      case 'browser.key': return this.ok(await this.browser.pressKey(String(parameters.key || ''), signal), startTime, { executor: 'chromium-cdp' });
       case 'mcp.list': return this.ok(await this.mcp.listTools(signal), startTime, { executor: 'layra-mcp' });
+      case 'mcp.refresh': { const remote = await this.mcp.listTools(signal); const registered = this.toolRegistry.registerMcpTools(remote); return this.ok(registered, startTime, { executor: 'layra-mcp', registered: registered.length }); }
       case 'mcp.call': return this.ok(await this.mcp.callTool(String(parameters.name || ''), parameters.arguments && typeof parameters.arguments === 'object' ? parameters.arguments : {}, signal), startTime, { executor: 'layra-mcp' });
       case 'scheduler.add': return this.ok(await this.scheduler.add(String(parameters.prompt || ''), String(parameters.runAt || ''), parameters.intervalMs === undefined ? undefined : Number(parameters.intervalMs)), startTime, { executor: 'layra-scheduler', persistent: true });
       case 'scheduler.list': return this.ok(await this.scheduler.list(), startTime, { executor: 'layra-scheduler', persistent: true });
       case 'scheduler.remove': return this.ok(await this.scheduler.remove(String(parameters.id || '')), startTime, { executor: 'layra-scheduler', persistent: true });
       case 'delegate.run': return this.ok(await this.delegator.run(String(parameters.prompt || ''), { maxRounds: Math.max(1, Math.min(12, Number(parameters.maxRounds || 6))), signal, parentGoal: this.state.currentGoal }), startTime, { executor: 'layra-internal-delegation', unifiedRuntime: true });
-      default: return this.fail(toolName, `Unsupported tool: ${toolName}`, startTime);
+      case 'delegate.run_many': { const prompts = Array.isArray(parameters.prompts) ? parameters.prompts.map(String).map(value => value.trim()).filter(Boolean).slice(0, 4) : []; if (!prompts.length) return this.fail(toolName, 'prompts must contain 1-4 non-empty tasks', startTime); const results = await this.delegator.runMany(prompts, { maxRounds: Math.max(1, Math.min(12, Number(parameters.maxRounds || 6))), signal, parentGoal: this.state.currentGoal }); return this.ok(results, startTime, { executor: 'layra-internal-delegation', unifiedRuntime: true, parallel: true }); }
+      case 'delegate.list': return this.ok(this.delegator.list(), startTime, { executor: 'layra-internal-delegation', unifiedRuntime: true });
+      case 'delegate.cancel': return this.ok(this.delegator.cancel(String(parameters.id || '')), startTime, { executor: 'layra-internal-delegation', unifiedRuntime: true });
+      case 'android.toast': return this.ok(await this.android.toast(String(parameters.text || '')), startTime, { executor: 'termux-android' });
+      case 'android.notify': return this.ok(await this.android.notify(String(parameters.title || 'Layra'), String(parameters.content || '')), startTime, { executor: 'termux-android' });
+      case 'android.open_url': return this.ok(await this.android.openUrl(String(parameters.url || '')), startTime, { executor: 'termux-android' });
+      case 'android.clipboard_get': return this.ok(await this.android.clipboardGet(), startTime, { executor: 'termux-android' });
+      case 'android.clipboard_set': return this.ok(await this.android.clipboardSet(String(parameters.text || '')), startTime, { executor: 'termux-android' });
+      default: { const remote = this.toolRegistry.resolveMcpTool(toolName); if (remote) return this.ok(await this.mcp.callTool(remote, parameters, signal), startTime, { executor: 'layra-mcp', dynamic: true, remoteTool: remote }); return this.fail(toolName, `Unsupported tool: ${toolName}`, startTime); }
     }
   }
   private safeChildEnv(): NodeJS.ProcessEnv { const env: NodeJS.ProcessEnv = {}; const allow = new Set(['PATH','HOME','PWD','OLDPWD','TERM','LANG','LC_ALL','TMPDIR','PREFIX','ANDROID_ROOT','ANDROID_DATA','SHELL','USER','USERNAME','LOGNAME','NODE_PATH']); for (const [key,value] of Object.entries(process.env)) if (allow.has(key) || key.startsWith('LAYRA_')) env[key] = value; for (const key of ['NVIDIA_API_KEY','DEEPSEEK_API_KEY','OPENROUTER_API_KEY','OPENAI_API_KEY','ANTHROPIC_API_KEY','GOOGLE_API_KEY','GEMINI_API_KEY']) delete env[key]; return env; }
