@@ -5,5 +5,5 @@
     android:notificationTimeout="100"
     android:canRetrieveWindowContent="true"
     android:canPerformGestures="true"
-    android:description="Allows Layra to inspect and control Android UI after the user explicitly enables the service."
+    android:description="@string/accessibility_service_description"
     android:settingsActivity="io.layra.bridge.MainActivity" />
