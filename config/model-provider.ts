@@ -1,3 +1,6 @@
+import { Tool } from '../agent/state';
+import { extractModelTurn, ModelToolTurn, toOpenAICompatibleTools } from '../core/tool-protocol';
+
 export interface ModelConfig {
   name: string;
   provider: string;
@@ -8,8 +11,23 @@ export interface ModelConfig {
   maxTokens: number;
 }
 
-export interface ChatMessage { role: 'system' | 'user' | 'assistant' | 'tool'; content: string; }
+export interface ChatMessage {
+  role: 'system' | 'user' | 'assistant' | 'tool';
+  content: string;
+  tool_call_id?: string;
+  name?: string;
+  tool_calls?: any[];
+}
+
 export interface ChatResult { content: string; raw: any; }
+export interface ModelToolOptions {
+  model?: string;
+  temperature?: number;
+  maxTokens?: number;
+  tools?: Tool[];
+  toolChoice?: 'auto' | 'none' | 'required';
+}
+
 export interface ModelClient {
   provider: string;
   apiKeyConfigured: boolean;
@@ -17,10 +35,10 @@ export interface ModelClient {
   defaultModel: string;
   temperature: number;
   maxTokens: number;
-  chat(messages: ChatMessage[], options?: { model?: string; temperature?: number; maxTokens?: number }): Promise<ChatResult>;
+  chat(messages: ChatMessage[], options?: ModelToolOptions): Promise<ChatResult>;
+  chatWithTools(messages: ChatMessage[], options: ModelToolOptions & { tools: Tool[] }): Promise<ModelToolTurn>;
 }
 
-/** Provider configuration is runtime-selectable. NVIDIA is only the current default. */
 export function getModelConfig(): ModelConfig {
   return {
     name: process.env.LAYRA_MODEL_NAME || process.env.LAYRA_MODEL || 'nemotron-3.5-lightning-30b-a3b',
@@ -40,6 +58,29 @@ export function createModelClient(apiKey?: string): ModelClient | null {
   const key = apiKey || process.env[config.apiKeyEnv];
   if (!key) return null;
 
+  const request = async (messages: ChatMessage[], options: ModelToolOptions = {}): Promise<any> => {
+    const body: any = {
+      model: options.model || config.model,
+      messages,
+      temperature: options.temperature ?? config.temperature,
+      max_tokens: options.maxTokens ?? config.maxTokens
+    };
+    if (options.tools?.length) {
+      body.tools = toOpenAICompatibleTools(options.tools);
+      body.tool_choice = options.toolChoice || 'auto';
+    }
+    const response = await fetch(config.apiEndpoint, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${key}` },
+      body: JSON.stringify(body)
+    });
+    const text = await response.text();
+    let raw: any;
+    try { raw = text ? JSON.parse(text) : null; } catch { raw = { rawText: text }; }
+    if (!response.ok) throw new Error(`${config.provider} API HTTP ${response.status}: ${raw?.error?.message || text.slice(0, 300)}`);
+    return raw;
+  };
+
   return {
     provider: config.provider,
     apiKeyConfigured: true,
@@ -47,29 +88,15 @@ export function createModelClient(apiKey?: string): ModelClient | null {
     defaultModel: config.model,
     temperature: config.temperature,
     maxTokens: config.maxTokens,
-    async chat(messages: ChatMessage[], options = {}): Promise<ChatResult> {
-      const response = await fetch(config.apiEndpoint, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          Authorization: `Bearer ${key}`
-        },
-        body: JSON.stringify({
-          model: options.model || config.model,
-          messages,
-          temperature: options.temperature ?? config.temperature,
-          max_tokens: options.maxTokens ?? config.maxTokens
-        })
-      });
-      const text = await response.text();
-      let raw: any;
-      try { raw = text ? JSON.parse(text) : null; } catch { raw = { rawText: text }; }
-      if (!response.ok) {
-        throw new Error(`${config.provider} API HTTP ${response.status}: ${raw?.error?.message || text.slice(0, 300)}`);
-      }
+    async chat(messages, options = {}) {
+      const raw = await request(messages, options);
       const content = raw?.choices?.[0]?.message?.content;
       if (typeof content !== 'string') throw new Error(`${config.provider} API returned no assistant content`);
       return { content, raw };
+    },
+    async chatWithTools(messages, options) {
+      const raw = await request(messages, options);
+      return extractModelTurn(raw);
     }
   };
 }
