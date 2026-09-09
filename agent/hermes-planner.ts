@@ -33,7 +33,6 @@ export class HermesPlanner extends BasePlanner {
     const skills = await this.skills.findRelevant(goal, 4);
     const allowedSkillRefs = new Set(skills.map(skill => skill.name));
     this.state.shortTermMemory.relevantSkillsForGoal = skills.map(skill => skill.name).slice(0, 4);
-    this.state.shortTermMemory.skillExecutionEvidence = [];
     const toolCatalog = this.toolRegistry.getAvailableTools().map(tool => ({ name: tool.name, description: tool.description, parameters: tool.parameters, returns: tool.returns, risk: tool.permissions }));
     const prompt = { goal, availableTools: toolCatalog, relevantMemory: memories, relevantSkills: skills.map(skill => ({ name: skill.name, description: skill.description, content: skill.content.slice(0, 8000) })), state: { currentGoal: this.state.currentGoal, recentActions: this.state.executionHistory.slice(-8), recentReflections: this.state.reflections.slice(-8), previousPlans: this.state.planningHistory.slice(-3) }, context };
     try {
