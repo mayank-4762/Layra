@@ -21,20 +21,17 @@ export class LayraScheduler {
   private loaded = false;
   private timer: NodeJS.Timeout | null = null;
   private running = false;
+  private callback: ((job: ScheduledJob) => void | Promise<void>) | undefined;
   private writeTail: Promise<void> = Promise.resolve();
 
-  constructor(root = process.env.LAYRA_STATE_DIR || path.join(process.cwd(), '.state')) {
-    this.file = path.join(path.resolve(root), 'scheduler.json');
-  }
+  constructor(root = process.env.LAYRA_STATE_DIR || path.join(process.cwd(), '.state')) { this.file = path.join(path.resolve(root), 'scheduler.json'); }
 
   async load(): Promise<void> {
     if (this.loaded) return;
     try {
       this.data = JSON.parse(await fs.readFile(this.file, 'utf8')) as SchedulerFile;
       if (!Array.isArray(this.data.jobs)) this.data = { version: 1, jobs: [] };
-    } catch (error: any) {
-      if (error?.code !== 'ENOENT') throw new Error(`Unable to load scheduler: ${error?.message || String(error)}`);
-    }
+    } catch (error: any) { if (error?.code !== 'ENOENT') throw new Error(`Unable to load scheduler: ${error?.message || String(error)}`); }
     this.loaded = true;
   }
 
@@ -52,56 +49,27 @@ export class LayraScheduler {
   }
 
   async list(): Promise<ScheduledJob[]> { await this.load(); return this.data.jobs.map(job => ({ ...job })).sort((a, b) => a.nextRunAt.localeCompare(b.nextRunAt)); }
-
-  async remove(id: string): Promise<boolean> {
-    await this.load();
-    const before = this.data.jobs.length;
-    this.data.jobs = this.data.jobs.filter(job => job.id !== id);
-    if (before !== this.data.jobs.length) await this.persist();
-    this.arm();
-    return before !== this.data.jobs.length;
-  }
-
-  async due(now = new Date()): Promise<ScheduledJob[]> {
-    await this.load();
-    return this.data.jobs.filter(job => job.enabled && new Date(job.nextRunAt).getTime() <= now.getTime()).map(job => ({ ...job }));
-  }
-
-  async markRun(id: string, ranAt = new Date()): Promise<void> {
-    await this.load();
-    const job = this.data.jobs.find(item => item.id === id);
-    if (!job) return;
-    job.lastRunAt = ranAt.toISOString();
-    if (job.intervalMs) job.nextRunAt = new Date(ranAt.getTime() + job.intervalMs).toISOString();
-    else job.enabled = false;
-    await this.persist();
-    this.arm();
-  }
+  async remove(id: string): Promise<boolean> { await this.load(); const before = this.data.jobs.length; this.data.jobs = this.data.jobs.filter(job => job.id !== id); if (before !== this.data.jobs.length) await this.persist(); this.arm(); return before !== this.data.jobs.length; }
+  async due(now = new Date()): Promise<ScheduledJob[]> { await this.load(); return this.data.jobs.filter(job => job.enabled && new Date(job.nextRunAt).getTime() <= now.getTime()).map(job => ({ ...job })); }
+  async markRun(id: string, ranAt = new Date()): Promise<void> { await this.load(); const job = this.data.jobs.find(item => item.id === id); if (!job) return; job.lastRunAt = ranAt.toISOString(); if (job.intervalMs) job.nextRunAt = new Date(ranAt.getTime() + job.intervalMs).toISOString(); else job.enabled = false; await this.persist(); this.arm(); }
 
   start(onDue: (job: ScheduledJob) => void | Promise<void>): void {
     this.running = true;
-    this.arm(onDue);
+    this.callback = onDue;
+    void this.load().then(() => this.arm()).catch(error => { console.error(`Layra scheduler failed to load: ${error instanceof Error ? error.message : String(error)}`); });
   }
 
-  stop(): void {
-    this.running = false;
-    if (this.timer) clearTimeout(this.timer);
-    this.timer = null;
-  }
+  stop(): void { this.running = false; this.callback = undefined; if (this.timer) clearTimeout(this.timer); this.timer = null; }
 
-  private arm(onDue?: (job: ScheduledJob) => void | Promise<void>): void {
-    if (!this.running) return;
+  private arm(): void {
+    if (!this.running || !this.loaded) return;
     if (this.timer) clearTimeout(this.timer);
     this.timer = setTimeout(async () => {
       try {
         const jobs = await this.due();
-        for (const job of jobs) {
-          await this.markRun(job.id);
-          await onDue?.(job);
-        }
-      } finally {
-        this.arm(onDue);
-      }
+        for (const job of jobs) { await this.markRun(job.id); await this.callback?.(job); }
+      } catch (error) { console.error(`Layra scheduler tick failed: ${error instanceof Error ? error.message : String(error)}`); }
+      finally { this.arm(); }
     }, Math.max(250, Math.min(60_000, this.nextDelay()))).unref();
   }
 
@@ -112,12 +80,7 @@ export class LayraScheduler {
   }
 
   private async persist(): Promise<void> {
-    this.writeTail = this.writeTail.then(async () => {
-      await fs.mkdir(path.dirname(this.file), { recursive: true });
-      const temp = `${this.file}.${process.pid}.tmp`;
-      await fs.writeFile(temp, JSON.stringify(this.data, null, 2), { encoding: 'utf8', mode: 0o600 });
-      await fs.rename(temp, this.file);
-    });
+    this.writeTail = this.writeTail.then(async () => { await fs.mkdir(path.dirname(this.file), { recursive: true }); const temp = `${this.file}.${process.pid}.tmp`; await fs.writeFile(temp, JSON.stringify(this.data, null, 2), { encoding: 'utf8', mode: 0o600 }); await fs.rename(temp, this.file); });
     return this.writeTail;
   }
 }
