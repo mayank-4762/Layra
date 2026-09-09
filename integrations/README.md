@@ -13,7 +13,7 @@ export LAYRA_TELEGRAM_BOT_TOKEN='your-bot-token'
 export LAYRA_TELEGRAM_ALLOWED_USER_IDS='your-telegram-user-id'
 ```
 
-The allow-list is optional in code, but strongly recommended so another Telegram user cannot control your Layra instance.
+The user allow-list is required. This prevents another Telegram user from controlling your Layra instance. Multiple IDs may be supplied as a comma-separated list.
 
 Start Layra with:
 
