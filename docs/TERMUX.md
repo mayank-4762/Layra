@@ -1,6 +1,6 @@
 # Layra on Android / Termux
 
-Layra is one self-contained Node.js agent runtime. Hermes-derived reasoning/planning, OpenClaw-derived execution/control, and DHS/DeepSeek evaluation are fused into Layra; Android does **not** need a separate Hermes or OpenClaw agent installation.
+Layra is one self-contained Node.js agent runtime. Hermes-derived reasoning/planning, governed execution/control, and DHS/DeepSeek analysis are fused into Layra; Android does not need a separate Hermes or OpenClaw agent installation.
 
 ## 1. Install the Android runtime
 
@@ -36,13 +36,8 @@ NVIDIA is the current default reasoning model provider. The provider layer is ru
 ## 4. Run Layra interactively or autonomously
 
 ```sh
-# One conversational turn
 npm start -- --once "Inspect the workspace and tell me what needs fixing."
-
-# Interactive session
 npm start -- --chat
-
-# Autonomous goal
 LAYRA_GOAL='Inspect this workspace, identify the highest-priority runtime problem, fix it, verify the fix, and record the lesson.' npm start
 ```
 
@@ -58,6 +53,7 @@ export LAYRA_ALLOW_SHELL=true
 export LAYRA_ALLOW_WEB_POST=true
 export LAYRA_ALLOW_SCHEDULER=true
 export LAYRA_ALLOW_DELEGATION=true
+export LAYRA_ALLOW_ANDROID=true
 ```
 
 For browser automation, connect an existing Chromium instance through Chrome DevTools Protocol:
@@ -67,9 +63,9 @@ export LAYRA_ALLOW_BROWSER=true
 export LAYRA_CDP_WS_URL='ws://127.0.0.1:9222/devtools/page/<target-id>'
 ```
 
-Browser navigation is HTTP(S)-validated and browser operations have bounded timeouts and abort handling.
+Browser capabilities include navigation, visible-text snapshots, accessibility-tree snapshots, screenshots, tab discovery, CSS click/type, key dispatch, bounded timeouts, and abort handling. Full Android accessibility control is not provided by this Node runtime.
 
-For MCP, configure one trusted stdio server explicitly rather than allowing the model to choose arbitrary executables:
+For MCP, configure one trusted stdio server explicitly:
 
 ```sh
 export LAYRA_ALLOW_MCP=true
@@ -77,20 +73,22 @@ export LAYRA_MCP_SERVER_COMMAND='your-mcp-server'
 export LAYRA_MCP_SERVER_ARGS='["arg1","arg2"]'
 ```
 
+Use `mcp.refresh` to register discovered MCP tools into Layra's live model tool catalog. Those tools still execute through the same ToolExecutor.
+
 Shell commands remain subject to Layra's execution safety policy and filesystem access is constrained to `LAYRA_WORKSPACE_ROOT` (the current directory by default).
 
-## 6. Scheduling and internal delegation
+## 6. Android / Termux helpers
 
-Scheduled prompts are persisted in `.state/scheduler.json`. The CLI scheduler executes due prompts through the **same Layra runtime**, not a second agent process. One-shot and recurring jobs are available through `scheduler.add`.
+With `LAYRA_ALLOW_ANDROID=true` and the Termux:API package installed, Layra can use in-process Android helpers for toast messages, notifications, opening HTTP(S) URLs, and clipboard get/set. These are capability tools inside Layra; they are not a separate agent.
 
-Internal delegation creates bounded child tasks that reuse Layra's existing model provider, tool registry, permissions, workspace, and executor. It does not install or launch Hermes/OpenClaw as child agents.
+## 7. Scheduling and internal delegation
 
-## 7. Persistence and learning
+Scheduled prompts are persisted in `.state/scheduler.json` and are only armed by the CLI when `LAYRA_ALLOW_SCHEDULER=true`. Due jobs execute through the same Layra runtime. Internal delegation creates bounded child tasks that reuse the existing model provider, tool registry, permissions, workspace, and executor.
 
-Runtime state is stored under `.state/` by default. Layra keeps session state, a durable event journal, structured memory, schedules, and learned skills there. `session.search` provides bounded retrieval over the event journal.
+## 8. Persistence and learning
 
-The workspace `skills/` directory may also contain manually supplied procedural skills.
+Runtime state is stored under `.state/` by default. Layra keeps session snapshots, a durable event journal, structured memory, human-readable `memory/MEMORY.md` and `memory/USER.md`, schedules, and learned procedural skills. `session.search` provides bounded retrieval over the event journal.
 
 ## Android notes
 
-Android/Termux is a supported runtime target, but Android may suspend long-running processes. For unattended 24/7 work, keep the process on a persistent machine and use Android as a control surface. This is an infrastructure choice, not a requirement to install or run a second agent: Layra itself remains the single agent runtime.
+Android/Termux is a supported runtime target, but Android may suspend long-running processes. A native APK, AccessibilityService, foreground service, or deeper system-control layer still requires a dedicated Android application component; those are not falsely presented as complete in this runtime.
