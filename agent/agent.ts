@@ -5,11 +5,10 @@ import { ToolExecutor } from '../tools/executor';
 import { HermesPlanner } from './hermes-planner';
 import { DHSIntelligence } from '../intelligence/dhs';
 import { LayraSessionStore } from './layra-session';
-import { createModelClient, getModelConfig } from '../config/model-provider';
+import { createModelClient, getModelConfig, ChatMessage } from '../config/model-provider';
 import { MemoryStore } from '../core/memory';
 import { SkillStore } from '../core/skills';
-import { SelfImprovementEngine } from './self-improvement';
-import { ChatMessage } from '../config/model-provider';
+import { SelfImprovementEngine, ImprovementEvidence } from './self-improvement';
 import { runToolLoop, ToolLoopResult } from './tool-loop';
 
 /** Layra is one runtime: reasoning, planning, action, memory, evaluation and learning share the same state. */
@@ -29,6 +28,7 @@ export class HybridAgent {
   private running = false;
   private tasksThisRun = 0;
   private replansThisGoal = 0;
+  private currentGoalStartedAt = Date.now();
 
   constructor() {
     this.maxTasksPerRun = Math.max(1, Number(process.env.LAYRA_MAX_ACTIONS_PER_RUN || 3));
@@ -116,7 +116,10 @@ export class HybridAgent {
   setGoal(goal: string): void {
     const value = goal.trim();
     if (!value) throw new Error('Goal cannot be empty');
-    if (this.state.currentGoal) this.state.goalQueue.push(value); else this.state.currentGoal = value;
+    if (this.state.currentGoal) this.state.goalQueue.push(value); else {
+      this.state.currentGoal = value;
+      this.currentGoalStartedAt = Date.now();
+    }
     this.state.currentPlan = [];
     this.tasksThisRun = 0;
     this.replansThisGoal = 0;
@@ -143,6 +146,7 @@ export class HybridAgent {
     await this.sessionStore.writeStatus(this.state);
     if (!this.state.currentGoal && this.state.goalQueue.length) {
       this.state.currentGoal = this.state.goalQueue.shift() || null;
+      this.currentGoalStartedAt = Date.now();
       this.tasksThisRun = 0;
       this.replansThisGoal = 0;
       this.state.currentPlan = [];
@@ -162,7 +166,7 @@ export class HybridAgent {
       this.state.currentPlan = plan.steps.map(step => ({ ...step, status: PlanStepStatus.PENDING, actualDuration: null, result: null, error: null }));
       this.state.planningHistory.push([...this.state.currentPlan]);
       this.replansThisGoal += 1;
-      await this.sessionStore.event('plan_generated', `Generated ${this.state.currentPlan.length}-step plan`, { confidence: plan.confidence, reasoning: plan.reasoning, risk: this.hermesPlanner.calculatePlanRisk(plan), replanNumber: this.replansThisGoal });
+      await this.sessionStore.event('plan_generated', `Generated ${this.state.currentPlan.length}-step plan`, { confidence: plan.confidence, reasoning: plan.reasoning, risk: this.hermesPlanner.calculatePlanRisk(plan), replanNumber: this.replansThisGoal, skillsConsidered: this.state.shortTermMemory.relevantSkillsForGoal || [] });
       if (!this.state.currentPlan.length) { await this.requestReplan('Planner returned no executable steps'); return true; }
     }
     const ready = this.readySteps();
@@ -249,43 +253,40 @@ export class HybridAgent {
       }
     }
     this.state.longTermMemory.recentEvidence = this.state.executionHistory.slice(-20);
-    if (this.state.completedTasks.length >= 5 && this.state.completedTasks.length % 5 === 0) await this.captureProcedureSkill();
-  }
-
-  private async captureProcedureSkill(): Promise<void> {
-    const goal = this.state.currentGoal || 'successful workflow';
-    const name = `learned-${goal.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '').slice(0, 45) || 'workflow'}`;
-    const steps = this.state.completedTasks.slice(-8).map((task: Task, i: number) => `${i + 1}. ${task.description} (tool: ${task.assignedTo || 'n/a'})`).join('\n');
-    const lessons = (this.state.longTermMemory.lessons || []).slice(-5).map((item: any) => `- ${String(item)}`).join('\n');
-    try {
-      await this.skillStore.upsert(name, `# Procedure\n\n${steps}\n\n## Verification\nConfirm the goal-specific result from fresh evidence; do not infer success from step completion alone.\n\n# Lessons\n\n${lessons || '- No durable lesson recorded.'}`, { description: 'Reusable workflow learned by Layra.', tools: this.state.completedTasks.slice(-8).map(t => t.assignedTo || '').filter(Boolean) });
-      await this.sessionStore.event('skill_learned', `Saved procedural skill ${name}`, { name });
-    } catch (error) { this.state.shortTermMemory.skillLearningError = error instanceof Error ? error.message : String(error); }
   }
 
   private async finishGoal(): Promise<boolean> {
     const goal = this.state.currentGoal;
     if (!goal) return false;
-    const evidence = this.state.currentPlan.map(step => ({ id: step.id, description: step.description, expectedOutcome: step.expectedOutcome, status: step.status, result: this.safeEvidence(step.result), error: step.error }));
-    const verification = await this.dhsIntelligence.verifyGoal(goal, evidence);
+    const evidence: ImprovementEvidence[] = this.state.currentPlan.map(step => ({ id: step.id, type: 'goal-step', summary: `${step.description}: ${step.expectedOutcome || 'completed'}`, success: step.status === PlanStepStatus.COMPLETED && !step.error }));
+    const verification = await this.dhsIntelligence.verifyGoal(goal, this.state.currentPlan.map(step => ({ id: step.id, description: step.description, expectedOutcome: step.expectedOutcome, status: step.status, result: this.safeEvidence(step.result), error: step.error })));
     this.state.shortTermMemory.goalVerification = verification;
     const lessons = (this.state.longTermMemory.lessons || []).slice(-10).map((item: any) => typeof item === 'string' ? item : String(item?.content || '')).filter(Boolean);
     const failures = this.state.failedTasks.slice(-10).map(task => String(task.error || task.description)).filter(Boolean);
-    const improvementEvidence = evidence.map(item => ({ id: item.id, type: 'goal-step', summary: `${item.description}: ${item.expectedOutcome || 'completed'}`, success: item.status === PlanStepStatus.COMPLETED && !item.error }));
+    const skillsUsed = Array.isArray(this.state.shortTermMemory.relevantSkillsForGoal) ? this.state.shortTermMemory.relevantSkillsForGoal.map(String) : [];
+    const evaluation = await this.selfImprovement.evaluateGoalOutcome(goal, verification.achieved, evidence, skillsUsed, this.currentGoalStartedAt).catch(error => {
+      this.state.shortTermMemory.selfImprovementReuseError = error instanceof Error ? error.message : String(error);
+      return { evaluated: [], improved: [], regressed: [] };
+    });
+    this.state.shortTermMemory.lastSelfImprovementEvaluation = evaluation;
     if (!verification.achieved) {
-      await this.selfImprovement.observe({ goal, success: false, evidence: improvementEvidence, failures: [verification.reason, verification.nextAction || '', ...failures].filter(Boolean), lessons, skillsUsed: [] }).catch(error => { this.state.shortTermMemory.selfImprovementError = error instanceof Error ? error.message : String(error); });
+      await this.selfImprovement.observe({ goal, success: false, evidence, failures: [verification.reason, verification.nextAction || '', ...failures].filter(Boolean), lessons, skillsUsed }).catch(error => { this.state.shortTermMemory.selfImprovementError = error instanceof Error ? error.message : String(error); });
       await this.requestReplan(`Goal verification rejected completion: ${verification.reason}${verification.nextAction ? ` Next: ${verification.nextAction}` : ''}`);
       return true;
     }
     this.state.goalHistory.push(goal);
     await this.dhsIntelligence.generateGoalInsights(true, goal);
     await this.memoryStore.remember({ kind: 'event', content: `Verified goal completed: ${goal}`, tags: ['goal', 'verified'], importance: 9, source: 'DHS' });
-    await this.selfImprovement.observe({ goal, success: true, evidence: improvementEvidence, failures, lessons, skillsUsed: [] }).catch(error => { this.state.shortTermMemory.selfImprovementError = error instanceof Error ? error.message : String(error); });
+    const improvements = await this.selfImprovement.observe({ goal, success: true, evidence, failures, lessons, skillsUsed }).catch(error => { this.state.shortTermMemory.selfImprovementError = error instanceof Error ? error.message : String(error); return []; });
+    if (improvements.some(candidate => candidate.status === 'promoted')) {
+      await this.sessionStore.event('self_improvement_promoted', `Promoted ${improvements.filter(candidate => candidate.status === 'promoted').length} improvement(s).`, { goal, candidates: improvements.filter(candidate => candidate.status === 'promoted').map(candidate => ({ id: candidate.id, kind: candidate.kind, targetSkill: candidate.targetSkill })) });
+    }
     this.state.currentGoal = null;
     this.state.currentPlan = [];
     this.tasksThisRun = 0;
     this.replansThisGoal = 0;
-    await this.sessionStore.event('goal_completed', `Goal verified: ${goal}`, verification);
+    this.state.shortTermMemory.relevantSkillsForGoal = [];
+    await this.sessionStore.event('goal_completed', `Goal verified: ${goal}`, { ...verification, selfImprovement: { evaluated: evaluation.evaluated.length, improved: evaluation.improved.length, regressed: evaluation.regressed.length, newCandidates: improvements.length } });
     return true;
   }
 
