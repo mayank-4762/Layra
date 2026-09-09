@@ -8,62 +8,33 @@ import { assertSafeRelativePath, inspectUntrustedText } from '../core/security';
 export type ImprovementKind = 'knowledge' | 'skill' | 'strategy' | 'code';
 export type ImprovementStatus = 'proposed' | 'validated' | 'promoted' | 'rejected' | 'rolled_back';
 
-export interface ImprovementEvidence {
-  id: string;
-  type: string;
-  summary: string;
-  success: boolean;
-}
+export interface ImprovementEvidence { id: string; type: string; summary: string; success: boolean; }
 
 export interface ImprovementCandidate {
-  id: string;
-  kind: ImprovementKind;
-  title: string;
-  rationale: string;
-  change: string;
-  evidence: ImprovementEvidence[];
-  confidence: number;
-  reversible: boolean;
-  status: ImprovementStatus;
-  createdAt: string;
-  validatedAt?: string;
-  promotedAt?: string;
-  rollbackOf?: string;
+  id: string; kind: ImprovementKind; title: string; rationale: string; change: string;
+  evidence: ImprovementEvidence[]; confidence: number; reversible: boolean; status: ImprovementStatus;
+  createdAt: string; validatedAt?: string; promotedAt?: string; rollbackOf?: string;
+  targetSkill?: string; previousSkillContent?: string | null;
 }
 
 interface ImprovementState {
-  version: 1;
-  candidates: ImprovementCandidate[];
-  promotedCount: number;
-  rejectedCount: number;
-  rollbackCount: number;
-  lastRunAt: string | null;
+  version: 2; candidates: ImprovementCandidate[]; promotedCount: number; rejectedCount: number;
+  rollbackCount: number; lastRunAt: string | null; successfulReuseCount: number; regressionCount: number;
+  lastCuratorRunAt: string | null;
 }
 
 export interface SelfImprovementOptions {
-  stateDir?: string;
-  memoryStore?: MemoryStore;
-  skillStore?: SkillStore;
+  stateDir?: string; memoryStore?: MemoryStore; skillStore?: SkillStore;
   model?: { chat(messages: any[], options?: any): Promise<{ content: string }> } | null;
-  enabled?: boolean;
-  apply?: boolean;
-  minConfidence?: number;
-  minEvidence?: number;
-  maxCandidates?: number;
+  enabled?: boolean; apply?: boolean; minConfidence?: number; minEvidence?: number; maxCandidates?: number;
 }
 
-/**
- * Native Layra closed learning loop.
- *
- * The engine observes outcomes, distills reusable lessons/skills/strategies,
- * validates candidates, promotes only bounded low-risk changes, and keeps
- * enough provenance to roll back a promotion. Executable source changes are
- * always proposal-only in this phase.
- */
+/** Native Layra closed learning loop: observe -> diagnose -> propose -> validate -> promote -> measure. */
 export class SelfImprovementEngine {
   private readonly stateDir: string;
   private readonly file: string;
   private readonly improvementsDir: string;
+  private readonly backupsDir: string;
   private readonly memory: MemoryStore;
   private readonly skills: SkillStore;
   private readonly model: SelfImprovementOptions['model'];
@@ -73,12 +44,8 @@ export class SelfImprovementEngine {
   private readonly minEvidence: number;
   private readonly maxCandidates: number;
   private state: ImprovementState = {
-    version: 1,
-    candidates: [],
-    promotedCount: 0,
-    rejectedCount: 0,
-    rollbackCount: 0,
-    lastRunAt: null
+    version: 2, candidates: [], promotedCount: 0, rejectedCount: 0, rollbackCount: 0,
+    lastRunAt: null, successfulReuseCount: 0, regressionCount: 0, lastCuratorRunAt: null
   };
   private loaded = false;
 
@@ -86,6 +53,7 @@ export class SelfImprovementEngine {
     this.stateDir = path.resolve(options.stateDir || process.env.LAYRA_STATE_DIR || path.join(process.cwd(), '.state'));
     this.file = assertSafeRelativePath(this.stateDir, 'self-improvement.json');
     this.improvementsDir = assertSafeRelativePath(this.stateDir, 'improvements');
+    this.backupsDir = assertSafeRelativePath(this.stateDir, 'improvement-backups');
     this.memory = options.memoryStore || new MemoryStore(this.stateDir);
     this.skills = options.skillStore || new SkillStore();
     this.model = options.model === undefined ? createModelClient() : options.model;
@@ -100,49 +68,41 @@ export class SelfImprovementEngine {
     if (this.loaded) return;
     try {
       const parsed = JSON.parse(await fs.readFile(this.file, 'utf8')) as Partial<ImprovementState>;
-      if (parsed?.version === 1 && Array.isArray(parsed.candidates)) {
+      if (Array.isArray(parsed?.candidates)) {
         this.state = {
-          version: 1,
-          candidates: parsed.candidates.filter(this.validCandidate),
-          promotedCount: Number(parsed.promotedCount || 0),
-          rejectedCount: Number(parsed.rejectedCount || 0),
-          rollbackCount: Number(parsed.rollbackCount || 0),
-          lastRunAt: parsed.lastRunAt || null
+          version: 2,
+          candidates: parsed.candidates.filter(this.validCandidate).map(item => ({ ...item, previousSkillContent: item.previousSkillContent ?? null })),
+          promotedCount: Number(parsed.promotedCount || 0), rejectedCount: Number(parsed.rejectedCount || 0),
+          rollbackCount: Number(parsed.rollbackCount || 0), lastRunAt: parsed.lastRunAt || null,
+          successfulReuseCount: Number(parsed.successfulReuseCount || 0), regressionCount: Number(parsed.regressionCount || 0),
+          lastCuratorRunAt: parsed.lastCuratorRunAt || null
         };
       }
     } catch (error: any) {
       if (error?.code !== 'ENOENT') throw new Error(`Unable to load self-improvement state: ${error?.message || String(error)}`);
     }
     await fs.mkdir(this.improvementsDir, { recursive: true });
+    await fs.mkdir(this.backupsDir, { recursive: true });
     this.loaded = true;
   }
 
-  async observe(input: {
-    goal: string;
-    success: boolean;
-    evidence: ImprovementEvidence[];
-    failures?: string[];
-    lessons?: string[];
-    skillsUsed?: string[];
-  }): Promise<ImprovementCandidate[]> {
+  async observe(input: { goal: string; success: boolean; evidence: ImprovementEvidence[]; failures?: string[]; lessons?: string[]; skillsUsed?: string[]; }): Promise<ImprovementCandidate[]> {
     await this.load();
     if (!this.enabled) return [];
     const evidence = input.evidence.slice(-20);
-    if (evidence.length < this.minEvidence && input.success) return [];
     const candidates = this.model
       ? await this.modelCandidates(input.goal, input.success, evidence, input.failures || [], input.lessons || [], input.skillsUsed || [])
       : this.deterministicCandidates(input.goal, input.success, evidence, input.failures || [], input.lessons || [], input.skillsUsed || []);
-
     const bounded = candidates.slice(0, this.maxCandidates).map(candidate => this.normalizeCandidate(candidate, evidence));
-    for (const candidate of bounded) this.state.candidates.push(candidate);
+    this.state.candidates.push(...bounded);
     this.state.candidates = this.state.candidates.slice(-200);
     this.state.lastRunAt = new Date().toISOString();
     await this.persist();
 
     const results: ImprovementCandidate[] = [];
     for (const candidate of bounded) {
-      const validated = await this.validate(candidate);
-      if (!validated) {
+      const valid = await this.validate(candidate);
+      if (!valid) {
         candidate.status = 'rejected';
         this.state.rejectedCount += 1;
         results.push(candidate);
@@ -161,23 +121,30 @@ export class SelfImprovementEngine {
 
   async validate(candidate: ImprovementCandidate): Promise<boolean> {
     if (!candidate.reversible || candidate.evidence.length < this.minEvidence || candidate.confidence < this.minConfidence) return false;
-    if (candidate.kind === 'code') return false;
     const unsafe = inspectUntrustedText(`${candidate.title}\n${candidate.rationale}\n${candidate.change}`);
     if (unsafe.some(item => item.severity === 'high')) return false;
     if (!candidate.change.trim()) return false;
 
+    if (candidate.kind === 'code') {
+      // Code changes are safely reviewable proposals, but this engine never executes or promotes them.
+      return /diff --git\s+a\/|```diff|```patch/i.test(candidate.change)
+        && /(?:test|typecheck|build|verify|verification)/i.test(candidate.change)
+        && /(?:rollback|revert|restore|previous version)/i.test(candidate.change);
+    }
+
     if (candidate.kind === 'skill') {
       const match = candidate.change.match(/(?:^|\n)\s*name:\s*([a-z0-9][a-z0-9._-]{0,63})\s*$/im);
       const body = candidate.change.replace(/^---[\s\S]*?---\s*/m, '').trim();
-      if (!match || !body) return false;
-      if (!/(^|\n)##\s+Verification\b/im.test(body)) return false;
+      if (!match || !body || !/(^|\n)##\s+Verification\b/im.test(body)) return false;
     }
     return true;
   }
 
   async promote(candidate: ImprovementCandidate): Promise<boolean> {
     await this.load();
+    if (candidate.kind === 'code') return false;
     if (!(await this.validate(candidate)) || candidate.status !== 'validated') return false;
+
     if (candidate.kind === 'knowledge') {
       await this.memory.remember({ kind: 'lesson', content: candidate.change.trim(), tags: ['self-improvement', 'learned'], importance: candidate.confidence * 10, source: `improvement:${candidate.id}` });
     } else if (candidate.kind === 'strategy') {
@@ -187,17 +154,27 @@ export class SelfImprovementEngine {
       if (!match) return false;
       const name = match[1];
       const existing = await this.skills.read(name);
-      if (existing) {
-        await this.memory.remember({ kind: 'event', content: `Backed up skill ${name} before self-improvement promotion ${candidate.id}.`, tags: ['self-improvement', 'rollback'], importance: 8, source: `improvement:${candidate.id}` });
-      }
-      const body = candidate.change.replace(/^---[\s\S]*?---\s*/m, '').trim();
-      await this.skills.upsert(name, body, { description: `Improved workflow learned by Layra.`, version: '0.2.0', trusted: false });
-    } else {
-      return false;
+      candidate.targetSkill = name;
+      candidate.previousSkillContent = existing?.content ?? null;
+      if (existing) await this.backupSkill(candidate, existing.content);
+      const content = candidate.change.replace(/^---[\s\S]*?---\s*/m, '').trim();
+      await this.skills.upsert(name, content, { description: 'Improved workflow learned by Layra.', version: nextSkillVersion(existing?.content), trusted: false });
     }
+
     candidate.status = 'promoted';
     candidate.promotedAt = new Date().toISOString();
     this.state.promotedCount += 1;
+    await this.persist();
+    return true;
+  }
+
+  async recordReuse(candidateId: string, improved: boolean): Promise<boolean> {
+    await this.load();
+    const candidate = this.state.candidates.find(item => item.id === candidateId);
+    if (!candidate || candidate.status !== 'promoted') return false;
+    if (improved) this.state.successfulReuseCount += 1;
+    else { this.state.regressionCount += 1; await this.rollback(candidateId, 'Post-promotion evaluation regressed.'); }
+    await this.persist();
     return true;
   }
 
@@ -205,8 +182,14 @@ export class SelfImprovementEngine {
     await this.load();
     const candidate = this.state.candidates.find(item => item.id === candidateId);
     if (!candidate || candidate.status !== 'promoted') return false;
-    // Knowledge/strategy promotions are intentionally append-only; rollback
-    // records a compensating event rather than deleting history.
+
+    if (candidate.kind === 'skill' && candidate.targetSkill) {
+      if (candidate.previousSkillContent) {
+        await this.skills.upsert(candidate.targetSkill, candidate.previousSkillContent, { description: 'Restored prior Layra skill version.', version: nextSkillVersion(candidate.previousSkillContent), trusted: false });
+      } else {
+        await this.archiveSkill(candidate.targetSkill, candidate.id);
+      }
+    }
     await this.memory.remember({ kind: 'event', content: `Self-improvement ${candidateId} rolled back: ${reason}`, tags: ['self-improvement', 'rollback'], importance: 9, source: candidateId });
     candidate.status = 'rolled_back';
     candidate.rollbackOf = reason.slice(0, 500);
@@ -215,17 +198,42 @@ export class SelfImprovementEngine {
     return true;
   }
 
+  async curate(limit = 12): Promise<{ inspected: number; archived: number; duplicates: number; stale: number }> {
+    await this.load();
+    const skills = await this.skills.list();
+    const learned = skills.filter(item => item.name.startsWith('learned-')).slice(0, Math.max(1, limit));
+    let archived = 0; let duplicates = 0; let stale = 0;
+    const seen = new Map<string, { name: string; content: string }>();
+    for (const item of learned) {
+      const content = (await this.skills.read(item.name))?.content || '';
+      const normalized = normalizeSkillContent(content);
+      if (!normalized) continue;
+      const existing = seen.get(normalized);
+      if (existing) {
+        duplicates += 1;
+        await this.archiveSkill(item.name, 'duplicate');
+        archived += 1;
+        continue;
+      }
+      seen.set(normalized, { name: item.name, content });
+      const ageMs = Date.now() - skillMtime(item.path);
+      if (ageMs > 1000 * 60 * 60 * 24 * 90) {
+        stale += 1;
+        await this.memory.remember({ kind: 'event', content: `Learned skill ${item.name} is stale and was flagged for review.`, tags: ['self-improvement', 'curator', 'stale'], importance: 5, source: 'curator' });
+      }
+    }
+    this.state.lastCuratorRunAt = new Date().toISOString();
+    await this.persist();
+    return { inspected: learned.length, archived, duplicates, stale };
+  }
+
   getStatus() {
     return {
-      enabled: this.enabled,
-      apply: this.apply,
-      minConfidence: this.minConfidence,
-      minEvidence: this.minEvidence,
-      candidates: this.state.candidates.length,
-      promoted: this.state.promotedCount,
-      rejected: this.state.rejectedCount,
-      rolledBack: this.state.rollbackCount,
-      lastRunAt: this.state.lastRunAt
+      enabled: this.enabled, apply: this.apply, minConfidence: this.minConfidence, minEvidence: this.minEvidence,
+      candidates: this.state.candidates.length, promoted: this.state.promotedCount, rejected: this.state.rejectedCount,
+      rolledBack: this.state.rollbackCount, successfulReuse: this.state.successfulReuseCount,
+      regressions: this.state.regressionCount, learnedSkills: this.state.candidates.filter(item => item.kind === 'skill' && item.status === 'promoted').length,
+      lastRunAt: this.state.lastRunAt, lastCuratorRunAt: this.state.lastCuratorRunAt
     };
   }
 
@@ -236,9 +244,9 @@ export class SelfImprovementEngine {
   private async modelCandidates(goal: string, success: boolean, evidence: ImprovementEvidence[], failures: string[], lessons: string[], skillsUsed: string[]): Promise<ImprovementCandidate[]> {
     try {
       const response = await this.model!.chat([
-        { role: 'system', content: 'You are Layra self-improvement. Analyze evidence only. Propose at most 3 reversible, low-risk improvements. Do not propose executable code changes. Prefer reusable knowledge, skills, and strategies. Return strict JSON: {"candidates":[{"kind":"knowledge|skill|strategy|code","title":"","rationale":"","change":"","confidence":0-1}]}. Skill candidates must include a YAML line `name: learned-name` and a `## Verification` section. Never put shell execution instructions that bypass safety.' },
+        { role: 'system', content: 'You are Layra self-improvement. Analyze evidence only. Propose at most 3 reversible, low-risk improvements. Code candidates are proposal-only and must include a diff/patch plus explicit test, typecheck/build, verification, and rollback boundaries. Prefer reusable knowledge, skills, and strategies. Return strict JSON: {"candidates":[{"kind":"knowledge|skill|strategy|code","title":"","rationale":"","change":"","confidence":0-1,"reversible":true}]}. Skill candidates must include a YAML line `name: learned-name` and a `## Verification` section.' },
         { role: 'user', content: JSON.stringify({ goal, success, evidence, failures, lessons, skillsUsed }) }
-      ], { temperature: 0.1, maxTokens: 1400 });
+      ], { temperature: 0.1, maxTokens: 1600 });
       const parsed = parseJson(response.content);
       return Array.isArray(parsed?.candidates) ? parsed.candidates : [];
     } catch {
@@ -248,82 +256,70 @@ export class SelfImprovementEngine {
 
   private deterministicCandidates(goal: string, success: boolean, evidence: ImprovementEvidence[], failures: string[], lessons: string[], skillsUsed: string[]): Array<Partial<ImprovementCandidate>> {
     const out: Array<Partial<ImprovementCandidate>> = [];
-    if (!success && failures.length) {
-      out.push({ kind: 'knowledge', title: 'Failure pattern', rationale: 'A failure occurred during the goal attempt and should remain available to future planning.', change: `When working on ${goal}, account for this observed failure pattern: ${failures.slice(0, 3).join(' | ')}` , confidence: 0.85, reversible: true });
-    }
-    if (lessons.length) {
-      out.push({ kind: 'knowledge', title: 'Execution lesson', rationale: 'A lesson was derived from observed execution evidence.', change: lessons[0].trim(), confidence: 0.82, reversible: true });
-    }
+    if (!success && failures.length) out.push({ kind: 'knowledge', title: 'Failure pattern', rationale: 'A failure occurred during the goal attempt and should remain available to future planning.', change: `When working on ${goal}, account for this observed failure pattern: ${failures.slice(0, 3).join(' | ')}`, confidence: 0.85, reversible: true });
+    if (lessons.length) out.push({ kind: 'knowledge', title: 'Execution lesson', rationale: 'A lesson was derived from observed execution evidence.', change: lessons[0].trim(), confidence: 0.82, reversible: true });
     if (success && evidence.length >= this.minEvidence && skillsUsed.length) {
       const name = `learned-${slug(goal).slice(0, 45) || 'workflow'}`;
       out.push({ kind: 'skill', title: `Reusable workflow: ${goal}`, rationale: 'The workflow produced sufficient evidence for procedural reuse.', change: `name: ${name}\n\n# ${goal}\n\n## Procedure\n${evidence.slice(-8).map((item, index) => `${index + 1}. ${item.summary}`).join('\n')}\n\n## Verification\nConfirm the same goal-specific outcome from fresh evidence; do not infer success from step completion alone.`, confidence: 0.84, reversible: true });
     }
-    if (skillsUsed.length >= 2) {
-      out.push({ kind: 'strategy', title: 'Prefer previously successful procedures', rationale: 'Existing skills were involved in the observed workflow.', change: `For goals similar to ${goal}, retrieve relevant skills before planning and prefer the procedure with the strongest recent evidence.`, confidence: 0.81, reversible: true });
-    }
+    if (skillsUsed.length >= 2) out.push({ kind: 'strategy', title: 'Prefer previously successful procedures', rationale: 'Existing skills were involved in the observed workflow.', change: `For goals similar to ${goal}, retrieve relevant skills before planning and prefer the procedure with the strongest recent evidence.`, confidence: 0.81, reversible: true });
     return out;
   }
 
   private normalizeCandidate(candidate: Partial<ImprovementCandidate>, evidence: ImprovementEvidence[]): ImprovementCandidate {
     return {
-      id: `imp_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`,
-      kind: candidate.kind || 'knowledge',
-      title: String(candidate.title || 'Untitled improvement').slice(0, 160),
-      rationale: String(candidate.rationale || '').slice(0, 1200),
-      change: String(candidate.change || '').slice(0, 8000),
-      evidence: evidence.slice(-20),
-      confidence: clamp(Number(candidate.confidence ?? 0.5), 0, 1),
-      reversible: candidate.reversible !== false,
-      status: 'proposed',
-      createdAt: new Date().toISOString()
+      id: `imp_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`, kind: candidate.kind || 'knowledge',
+      title: String(candidate.title || 'Untitled improvement').slice(0, 160), rationale: String(candidate.rationale || '').slice(0, 1200),
+      change: String(candidate.change || '').slice(0, 12000), evidence: evidence.slice(-20), confidence: clamp(Number(candidate.confidence ?? 0.5), 0, 1),
+      reversible: candidate.reversible !== false, status: 'proposed', createdAt: new Date().toISOString(), targetSkill: candidate.targetSkill,
+      previousSkillContent: candidate.previousSkillContent ?? null
     };
   }
 
   private async writeProposal(candidate: ImprovementCandidate): Promise<void> {
     const safe = candidate.id.replace(/[^a-zA-Z0-9_-]/g, '_');
     const file = assertSafeRelativePath(this.improvementsDir, `${safe}.md`);
-    const body = [
-      `# ${candidate.title}`,
-      '',
-      `- ID: ${candidate.id}`,
-      `- Kind: ${candidate.kind}`,
-      `- Status: ${candidate.status}`,
-      `- Confidence: ${candidate.confidence.toFixed(2)}`,
-      `- Evidence count: ${candidate.evidence.length}`,
-      `- Reversible: ${candidate.reversible}`,
-      '',
-      '## Rationale',
-      candidate.rationale,
-      '',
-      '## Proposed Change',
-      '```text',
-      candidate.change,
-      '```',
-      '',
-      '## Evidence',
-      ...candidate.evidence.map(item => `- ${item.id}: ${item.summary} (success=${item.success})`),
-      ''
-    ].join('\n');
+    const boundary = candidate.kind === 'code'
+      ? ['## Validation Boundary', '- Review the proposed diff in isolation.', '- Run typecheck, build, and the relevant test suite in an isolated worktree.', '- Verify the intended behavior from fresh evidence.', '- Revert the isolated change completely on regression.', '']
+      : [];
+    const body = [`# ${candidate.title}`, '', `- ID: ${candidate.id}`, `- Kind: ${candidate.kind}`, `- Status: ${candidate.status}`, `- Confidence: ${candidate.confidence.toFixed(2)}`, `- Evidence count: ${candidate.evidence.length}`, `- Reversible: ${candidate.reversible}`, '', '## Rationale', candidate.rationale, '', '## Proposed Change', candidate.kind === 'code' ? '```diff' : '```text', candidate.change, '```', '', ...boundary, '## Evidence', ...candidate.evidence.map(item => `- ${item.id}: ${item.summary} (success=${item.success})`), ''].join('\n');
     const temp = `${file}.${process.pid}.tmp`;
     await fs.writeFile(temp, body, 'utf8');
     await fs.rename(temp, file);
   }
 
-  private async persist(): Promise<void> {
-    await fs.mkdir(this.stateDir, { recursive: true });
-    const temp = `${this.file}.${process.pid}.tmp`;
-    await fs.writeFile(temp, JSON.stringify(this.state, null, 2), { encoding: 'utf8', mode: 0o600 });
-    await fs.rename(temp, this.file);
+  private async backupSkill(candidate: ImprovementCandidate, content: string): Promise<void> {
+    const file = assertSafeRelativePath(this.backupsDir, `${candidate.id}.md`);
+    const temp = `${file}.${process.pid}.tmp`;
+    await fs.writeFile(temp, content, 'utf8');
+    await fs.rename(temp, file);
   }
 
-  private validCandidate(value: any): value is ImprovementCandidate {
-    return Boolean(value && typeof value.id === 'string' && ['knowledge', 'skill', 'strategy', 'code'].includes(value.kind) && typeof value.title === 'string' && typeof value.change === 'string' && Array.isArray(value.evidence) && typeof value.confidence === 'number');
+  private async archiveSkill(name: string, reason: string): Promise<void> {
+    const skill = await this.skills.read(name);
+    if (!skill) return;
+    const archiveRoot = assertSafeRelativePath(this.backupsDir, 'archive');
+    await fs.mkdir(archiveRoot, { recursive: true });
+    const file = assertSafeRelativePath(archiveRoot, `${name}-${reason}-${Date.now()}.md`);
+    const temp = `${file}.${process.pid}.tmp`;
+    await fs.writeFile(temp, skill.content, 'utf8');
+    await fs.rename(temp, file);
+    await this.memory.remember({ kind: 'event', content: `Archived learned skill ${name} (${reason}) instead of deleting it.`, tags: ['self-improvement', 'curator', 'archive'], importance: 6, source: 'curator' });
   }
 }
 
+function nextSkillVersion(content?: string): string {
+  const match = content?.match(/^version:\s*(\d+)\.(\d+)\.(\d+)/mi);
+  if (!match) return '0.1.0';
+  const patch = Number(match[3]) + 1;
+  return `${Number(match[1])}.${Number(match[2])}.${patch}`;
+}
+function skillMtime(file: string): number {
+  try { return require('fs').statSync(file).mtimeMs; } catch { return Date.now(); }
+}
+function normalizeSkillContent(content: string): string {
+  return content.replace(/^---[\s\S]*?---/m, '').replace(/\s+/g, ' ').trim().toLowerCase();
+}
 function clamp(value: number, min: number, max: number): number { return Number.isFinite(value) ? Math.max(min, Math.min(max, value)) : min; }
 function slug(value: string): string { return String(value).toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, ''); }
-function parseJson(value: string): any {
-  const text = String(value || '').trim().replace(/^```(?:json)?/i, '').replace(/```$/i, '').trim();
-  try { return JSON.parse(text); } catch { const start = text.indexOf('{'); const end = text.lastIndexOf('}'); if (start >= 0 && end > start) { try { return JSON.parse(text.slice(start, end + 1)); } catch {} } return null; }
-}
+function parseJson(value: string): any { const text = String(value || '').trim().replace(/^```(?:json)?/i, '').replace(/```$/i, '').trim(); try { return JSON.parse(text); } catch { const start = text.indexOf('{'); const end = text.lastIndexOf('}'); if (start >= 0 && end > start) { try { return JSON.parse(text.slice(start, end + 1)); } catch {} } return null; } }
