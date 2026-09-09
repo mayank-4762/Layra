@@ -32,7 +32,7 @@ export class MemoryStore {
     this.root = path.resolve(root);
     this.file = assertSafeRelativePath(this.root, 'memory.json');
     this.documentsRoot = path.resolve(process.env.LAYRA_MEMORY_DIR || path.join(process.cwd(), 'memory'));
-    this.vault = new KnowledgeVault();
+    this.vault = new KnowledgeVault(process.env.LAYRA_VAULT_DIR || path.join(this.root, 'vault'));
   }
 
   async load(): Promise<void> {
@@ -60,10 +60,8 @@ export class MemoryStore {
     const duplicate = this.cache.records.find(item => item.kind === input.kind && normalize(item.content) === normalized);
     if (duplicate) {
       const updated: MemoryRecord = { ...duplicate, tags: Array.from(new Set([...duplicate.tags, ...input.tags.map(String)])).slice(0, 32), importance: Math.max(duplicate.importance, Math.min(10, Number(input.importance))), updatedAt: new Date().toISOString(), source: input.source || duplicate.source };
-      const relatedIds = this.findRelatedIds(updated, 8);
-      updated.relatedIds = relatedIds;
-      const vaultPath = await this.projectToVault(updated);
-      updated.vaultPath = vaultPath;
+      updated.relatedIds = this.findRelatedIds(updated, 8);
+      updated.vaultPath = await this.projectToVault(updated);
       Object.assign(duplicate, updated);
       await this.persist();
       return duplicate;
@@ -122,17 +120,14 @@ export class MemoryStore {
 
   private findRelatedIds(record: MemoryRecord, limit: number): string[] {
     const tags = new Set(record.tags.map(normalize));
+    const words = tokenSet(record.content);
     return this.cache.records.filter(item => item.id !== record.id).map(item => {
       const overlap = item.tags.map(normalize).filter(tag => tags.has(tag)).length;
-      const sharedWords = tokenSet(item.content).filter(word => tokenSet(record.content).includes(word)).length;
+      const sharedWords = tokenSet(item.content).filter(word => words.includes(word)).length;
       return { id: item.id, score: overlap * 3 + Math.min(4, sharedWords) + item.importance * 0.02 };
     }).filter(item => item.score > 0).sort((a, b) => b.score - a.score).slice(0, limit).map(item => item.id);
   }
-
-  private async projectToVault(record: MemoryRecord): Promise<string | undefined> {
-    if (process.env.LAYRA_OBSIDIAN_VAULT === 'false') return undefined;
-    return this.vault.upsert(record);
-  }
+  private async projectToVault(record: MemoryRecord): Promise<string | undefined> { if (process.env.LAYRA_OBSIDIAN_VAULT === 'false') return undefined; return this.vault.upsert(record); }
   private async consolidateProjection(): Promise<void> {
     if (process.env.LAYRA_OBSIDIAN_VAULT === 'false') return;
     const important = this.cache.records.filter(item => item.importance >= 7 || item.kind === 'lesson').slice(-20);
