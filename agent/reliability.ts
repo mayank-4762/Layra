@@ -1,6 +1,6 @@
 import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from 'fs';
 import path from 'path';
-import type { AgentState, PlanStepStatus, TaskStatus } from './state';
+import type { AgentState, TaskStatus } from './state';
 import type { HybridAgent } from './agent';
 
 export interface Phase6ReliabilityOptions {
@@ -85,11 +85,12 @@ export class Phase6ReliabilitySupervisor {
     if (this.timer) clearInterval(this.timer);
     this.timer = null;
     const state = this.agent.getState();
-    this.persist(state);
+    this.scoreOutcomes(state);
     state.shortTermMemory = {
       ...(state.shortTermMemory || {}),
       phase6Supervisor: { reason, stoppedForBudget: this.stoppedForBudget, stoppedAt: new Date().toISOString() }
     };
+    this.persist(state);
   }
 
   isRunning(): boolean { return this.timer !== null; }
@@ -111,8 +112,8 @@ export class Phase6ReliabilitySupervisor {
 
   private async monitor(): Promise<void> {
     const state = this.agent.getState();
-    this.persist(state);
     this.scoreOutcomes(state);
+    this.persist(state);
 
     if (Date.now() - this.startedAt >= this.maxRuntimeMs) {
       this.tripBudget(state, `Maximum runtime ${this.maxRuntimeMs}ms reached`);
@@ -135,6 +136,7 @@ export class Phase6ReliabilitySupervisor {
   private tripBudget(state: AgentState, reason: string): void {
     this.stoppedForBudget = true;
     state.shortTermMemory = { ...(state.shortTermMemory || {}), phase6StopReason: reason };
+    this.persist(state);
     this.agent.stop();
   }
 
