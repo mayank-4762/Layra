@@ -40,6 +40,7 @@ export class ToolRegistry {
     add({ name: 'web.post', description: 'POST JSON or text to HTTP(S) endpoint', parameters: { url: { type: 'string' }, data: { type: 'any' }, headers: { type: 'object' }, timeoutMs: { type: 'number', default: 20000 } }, returns: 'object', permissions: ['web.post'], isAvailable: true });
     add({ name: 'memory.get', description: 'Read structured durable memory', parameters: { query: { type: 'string', default: '' }, limit: { type: 'number', default: 8 } }, returns: 'array', permissions: ['memory.get'], isAvailable: true });
     add({ name: 'memory.set', description: 'Append a structured durable memory record', parameters: { kind: { type: 'string' }, content: { type: 'string' }, tags: { type: 'array' }, importance: { type: 'number', default: 5 }, source: { type: 'string' } }, returns: 'object', permissions: ['memory.set'], isAvailable: true });
+    add({ name: 'session.search', description: 'Search the durable Layra session event journal', parameters: { query: { type: 'string' }, limit: { type: 'number', default: 20 } }, returns: 'array', permissions: ['session.search'], isAvailable: true });
     add({ name: 'system.info', description: 'Inspect Layra runtime platform and workspace', parameters: {}, returns: 'object', permissions: ['system.info'], isAvailable: true });
     add({ name: 'system.time', description: 'Get current UTC timestamp', parameters: {}, returns: 'string', permissions: ['system.time'], isAvailable: true });
     add({ name: 'browser.navigate', description: 'Navigate a configured Chromium browser to an HTTP(S) URL', parameters: { url: { type: 'string' } }, returns: 'object', permissions: ['browser.control'], isAvailable: true });
@@ -54,7 +55,7 @@ export class ToolRegistry {
     add({ name: 'delegate.run', description: 'Run a bounded internal child task using the same Layra runtime and permissions', parameters: { prompt: { type: 'string' }, maxRounds: { type: 'number', default: 6 } }, returns: 'object', permissions: ['delegation'], isAvailable: true });
   }
   grantBasicPermissions(grantedBy = 'system'): void {
-    const safe = ['filesystem.read', 'filesystem.list', 'web.get', 'memory.get', 'memory.set', 'system.info', 'system.time'];
+    const safe = ['filesystem.read', 'filesystem.list', 'web.get', 'memory.get', 'memory.set', 'session.search', 'system.info', 'system.time'];
     for (const name of safe) this.grantPermission(name, grantedBy, 'Safe default capability');
     if (process.env.LAYRA_ALLOW_LOCAL_WRITE === 'true') this.grantPermission('filesystem.write', grantedBy, 'Explicitly enabled by LAYRA_ALLOW_LOCAL_WRITE');
     if (process.env.LAYRA_ALLOW_SHELL === 'true') { this.grantPermission('shell.execute', grantedBy, 'Explicitly enabled by LAYRA_ALLOW_SHELL'); for (const name of ['process.start','process.poll','process.list','process.kill','process.wait']) this.grantPermission(name, grantedBy, 'Explicitly enabled by LAYRA_ALLOW_SHELL'); }
