@@ -2,6 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 
 const MODULE = '../dist/config/model-provider.js';
+const PROTOCOL = '../dist/core/tool-protocol.js';
 function clearLayraProviderEnv() {
   for (const key of ['LAYRA_MODEL_NAME','LAYRA_MODEL','LAYRA_MODEL_PROVIDER','LAYRA_MODEL_API_KEY_ENV','LAYRA_MODEL_API_ENDPOINT','LAYRA_MODEL_TEMPERATURE','LAYRA_MODEL_MAX_TOKENS','NVIDIA_API_KEY','CUSTOM_MODEL_KEY']) delete process.env[key];
 }
@@ -16,4 +17,19 @@ test('provider can be switched without changing Layra core code', async () => {
   const { getModelConfig, createModelClient } = await import(MODULE);
   process.env.LAYRA_MODEL_PROVIDER = 'custom'; process.env.LAYRA_MODEL_API_KEY_ENV = 'CUSTOM_MODEL_KEY'; process.env.LAYRA_MODEL_API_ENDPOINT = 'https://example.test/v1/chat/completions'; process.env.LAYRA_MODEL = 'custom/model'; process.env.CUSTOM_MODEL_KEY = 'test-key';
   const config = getModelConfig(); assert.equal(config.provider, 'custom'); assert.equal(config.apiKeyEnv, 'CUSTOM_MODEL_KEY'); assert.equal(config.model, 'custom/model'); assert.equal(config.apiEndpoint, 'https://example.test/v1/chat/completions'); const client = createModelClient(); assert.equal(client?.provider, 'custom'); assert.equal(client?.defaultModel, 'custom/model'); clearLayraProviderEnv();
+});
+
+test('tool protocol maps internal dotted names to provider-safe names and back', async () => {
+  const { toProviderToolName, toInternalToolName, toOpenAICompatibleTools, extractModelTurn } = await import(PROTOCOL);
+  const tools = [
+    { name: 'filesystem.read', description: 'Read', parameters: {}, returns: 'string', permissions: ['filesystem.read'], isAvailable: true },
+    { name: 'browser.select_tab', description: 'Select tab', parameters: {}, returns: 'object', permissions: ['browser.control'], isAvailable: true }
+  ];
+  assert.equal(toProviderToolName('filesystem.read'), 'filesystem_read');
+  assert.equal(toProviderToolName('android.control.tap'), 'android_control_tap');
+  assert.equal(toInternalToolName('filesystem_read', tools), 'filesystem.read');
+  const schema = toOpenAICompatibleTools(tools);
+  assert.deepEqual(schema.map(t => t.function.name), ['filesystem_read', 'browser_select_tab']);
+  const raw = { choices: [{ message: { content: '', tool_calls: [{ id: 'call_1', type: 'function', function: { name: 'filesystem_read', arguments: '{}' } }] } }] };
+  assert.equal(extractModelTurn(raw, tools).toolCalls[0].name, 'filesystem.read');
 });
