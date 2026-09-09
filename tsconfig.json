@@ -17,6 +17,7 @@
   "include": [
     "main.ts",
     "agent/**/*.ts",
+    "integrations/**/*.ts",
     "tools/registry.ts",
     "tools/executor.ts",
     "intelligence/**/*.ts",
