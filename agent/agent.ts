@@ -117,17 +117,19 @@ export class HybridAgent {
   setGoal(goal: string): void {
     const value = goal.trim();
     if (!value) throw new Error('Goal cannot be empty');
-    if (this.state.currentGoal) this.state.goalQueue.push(value); else {
+    if (this.state.currentGoal) {
+      this.state.goalQueue.push(value);
+    } else {
       this.state.currentGoal = value;
       this.currentGoalStartedAt = Date.now();
+      this.state.shortTermMemory.skillExecutionEvidence = [];
+      this.state.shortTermMemory.relevantSkillsForGoal = [];
+      this.state.currentPlan = [];
+      this.tasksThisRun = 0;
+      this.replansThisGoal = 0;
+      this.state.activeTasks = [];
+      this.state.taskQueue = [];
     }
-    this.state.currentPlan = [];
-    this.state.shortTermMemory.skillExecutionEvidence = [];
-    this.state.shortTermMemory.relevantSkillsForGoal = [];
-    this.tasksThisRun = 0;
-    this.replansThisGoal = 0;
-    this.state.activeTasks = [];
-    this.state.taskQueue = [];
   }
   getState(): AgentState { return this.state; }
   getSelfImprovementStatus() { return this.selfImprovement.getStatus(); }
