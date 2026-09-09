@@ -1,7 +1,6 @@
 package io.layra.bridge
 
 import android.accessibilityservice.AccessibilityServiceInfo
-import android.content.ComponentName
 import android.content.Context
 import android.content.Intent
 import android.graphics.Color
@@ -51,13 +50,15 @@ class MainActivity : android.app.Activity() {
             setOnClickListener { generateToken(); updateUi() }
         }
         val status = TextView(this).apply { id = 1001; textSize = 15f; setPadding(0, 20, 0, 0) }
+        val match = LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT)
+        val button = LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT).apply { topMargin = 20 }
 
-        root.addView(title, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT))
-        root.addView(info, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT))
-        root.addView(tokenView, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT))
-        root.addView(accessibility, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT).apply { topMargin = 20 })
-        root.addView(regenerate, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT))
-        root.addView(status, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT))
+        root.addView(title, match)
+        root.addView(info, match)
+        root.addView(tokenView, match)
+        root.addView(accessibility, button)
+        root.addView(regenerate, match)
+        root.addView(status, match)
         setContentView(root)
         if (prefs.getString("token", null).isNullOrBlank()) generateToken()
         updateUi()
@@ -80,15 +81,11 @@ class MainActivity : android.app.Activity() {
         val token = prefs.getString("token", "") ?: ""
         LayraAccessibilityService.currentToken = token
         tokenView.text = "Pairing token:\n$token"
-        val service = getSystemService(Context.ACCESSIBILITY_SERVICE) as android.view.accessibility.AccessibilityManager
-        val enabled = service.getEnabledAccessibilityServiceList(AccessibilityServiceInfo.FEEDBACK_ALL_MASK).any {
+        val manager = getSystemService(Context.ACCESSIBILITY_SERVICE) as android.view.accessibility.AccessibilityManager
+        val enabled = manager.getEnabledAccessibilityServiceList(AccessibilityServiceInfo.FEEDBACK_ALL_MASK).any {
             it.resolveInfo.serviceInfo.packageName == packageName && it.resolveInfo.serviceInfo.name == LayraAccessibilityService::class.java.name
         }
         val statusView = findViewById<TextView>(1001)
         statusView.text = if (enabled) "Status: Accessibility service enabled\nBridge: 127.0.0.1:8765" else "Status: Accessibility service disabled"
-    }
-
-    companion object {
-        fun openAccessibility(context: Context) = context.startActivity(Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS))
     }
 }
