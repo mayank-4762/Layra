@@ -12,13 +12,14 @@ import { LayraScheduler } from '../agent/scheduler';
 import { LayraDelegator } from '../agent/delegation';
 import { AndroidTermuxBridge } from './android-termux';
 import { AndroidControlBridge } from './android-control';
+import { registerAndroidControlTools } from './phase4-tool-registration';
 import path from 'path';
 
 export interface ToolExecutionResult { success: boolean; result: any; error: string | null; executionTime: number; metadata?: Record<string, any>; }
 /** Single execution boundary for Layra; all capabilities remain in one runtime. */
 export class ToolExecutor {
   private readonly toolRegistry: ToolRegistry; private readonly state: AgentState; private readonly runtime: NativeRuntime; private readonly processRegistry: ProcessRegistry; private readonly memoryStore: MemoryStore; private readonly browser: BrowserCdp; private readonly mcp: LayraMcpClient; private readonly scheduler: LayraScheduler; private readonly delegator: LayraDelegator; private readonly android: AndroidTermuxBridge; private readonly androidControl: AndroidControlBridge;
-  constructor(toolRegistry: ToolRegistry, state: AgentState) { this.toolRegistry = toolRegistry; this.state = state; this.runtime = new NativeRuntime(); this.processRegistry = new ProcessRegistry(); this.memoryStore = new MemoryStore(); this.browser = new BrowserCdp(); this.mcp = new LayraMcpClient(); this.scheduler = new LayraScheduler(); this.delegator = new LayraDelegator(toolRegistry, this); this.android = new AndroidTermuxBridge(); this.androidControl = new AndroidControlBridge(); }
+  constructor(toolRegistry: ToolRegistry, state: AgentState) { this.toolRegistry = toolRegistry; this.state = state; this.runtime = new NativeRuntime(); this.processRegistry = new ProcessRegistry(); this.memoryStore = new MemoryStore(); this.browser = new BrowserCdp(); this.mcp = new LayraMcpClient(); this.scheduler = new LayraScheduler(); this.delegator = new LayraDelegator(toolRegistry, this); this.android = new AndroidTermuxBridge(); this.androidControl = new AndroidControlBridge(); registerAndroidControlTools(this.toolRegistry, this.state); }
   async execute(toolName: string, parameters: Record<string, any>, signal?: AbortSignal): Promise<ToolExecutionResult> {
     const startTime = Date.now(); let result: ToolExecutionResult;
     try { if (!this.toolRegistry.isToolAvailable(toolName)) result = this.fail(toolName, 'Tool is not available or permission is not granted', startTime); else if (signal?.aborted) result = this.fail(toolName, 'Execution aborted', startTime); else { await this.toolRegistry.runBeforeHooks(toolName, parameters, { signal, goal: this.state.currentGoal, sessionId: this.state.id }); result = await this.dispatch(toolName, parameters, startTime, signal); } }
