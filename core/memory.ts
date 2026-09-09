@@ -60,16 +60,16 @@ export class MemoryStore {
     const duplicate = this.cache.records.find(item => item.kind === input.kind && normalize(item.content) === normalized);
     if (duplicate) {
       const updated: MemoryRecord = { ...duplicate, tags: Array.from(new Set([...duplicate.tags, ...input.tags.map(String)])).slice(0, 32), importance: Math.max(duplicate.importance, Math.min(10, Number(input.importance))), updatedAt: new Date().toISOString(), source: input.source || duplicate.source };
-      updated.relatedIds = this.findRelatedIds(updated, 8);
-      updated.vaultPath = await this.projectToVault(updated);
       Object.assign(duplicate, updated);
+      await this.refreshGraph(duplicate.id);
+      duplicate.vaultPath = await this.projectToVault(duplicate);
       await this.persist();
       return duplicate;
     }
     const now = new Date().toISOString();
     const record: MemoryRecord = { ...input, id: `mem_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`, createdAt: now, updatedAt: now, tags: Array.from(new Set(input.tags.map(String))).slice(0, 32), importance: Math.max(0, Math.min(10, Number(input.importance))), relatedIds: [] };
-    record.relatedIds = this.findRelatedIds(record, 8);
     this.cache.records.push(record);
+    await this.refreshGraph(record.id);
     this.compact();
     record.vaultPath = await this.projectToVault(record);
     await this.persist();
@@ -83,7 +83,7 @@ export class MemoryStore {
     const record = this.cache.records.find(item => item.id === id);
     if (!record) return false;
     Object.assign(record, patch, { updatedAt: new Date().toISOString() });
-    record.relatedIds = this.findRelatedIds(record, 8).filter(value => value !== id);
+    await this.refreshGraph(id);
     record.vaultPath = await this.projectToVault(record);
     this.compact();
     await this.persist();
@@ -118,6 +118,26 @@ export class MemoryStore {
   async readDocument(name: MemoryDocument): Promise<string> { await this.load(); return fs.readFile(assertSafeRelativePath(this.documentsRoot, name), 'utf8'); }
   async writeDocument(name: MemoryDocument, content: string): Promise<void> { await this.load(); await this.atomicDocumentWrite(name, content); }
 
+  private async refreshGraph(id: string): Promise<void> {
+    const record = this.cache.records.find(item => item.id === id);
+    if (!record) return;
+    const related = this.findRelatedIds(record, 8);
+    record.relatedIds = related;
+    const affected = new Set<string>([id, ...related]);
+    for (const other of this.cache.records) {
+      if (other.id === id) continue;
+      if (other.relatedIds?.includes(id) || related.includes(other.id)) {
+        other.relatedIds = this.findRelatedIds(other, 8);
+        affected.add(other.id);
+      }
+    }
+    if (process.env.LAYRA_OBSIDIAN_VAULT !== 'false') {
+      for (const affectedId of affected) {
+        const item = this.cache.records.find(candidate => candidate.id === affectedId);
+        if (item) item.vaultPath = await this.projectToVault(item);
+      }
+    }
+  }
   private findRelatedIds(record: MemoryRecord, limit: number): string[] {
     const tags = new Set(record.tags.map(normalize));
     const words = tokenSet(record.content);
