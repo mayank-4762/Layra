@@ -10,6 +10,11 @@ function startMock(handler) {
   });
 }
 
+async function stopMock(server) {
+  server.closeAllConnections?.();
+  await new Promise(resolve => server.close(() => resolve()));
+}
+
 async function readBody(req) {
   let body = '';
   for await (const chunk of req) body += chunk;
@@ -22,7 +27,7 @@ test('OpenAI-compatible model client performs a real local HTTP request and pars
     assert.equal(req.method, 'POST');
     assert.equal(payload.model, 'mock/model');
     assert.equal(payload.messages[0].content, 'hello');
-    res.writeHead(200, { 'content-type': 'application/json' });
+    res.writeHead(200, { 'content-type': 'application/json', connection: 'close' });
     res.end(JSON.stringify({ choices: [{ message: { content: 'OK' } }] }));
   });
   const previous = { provider: process.env.LAYRA_MODEL_PROVIDER, env: process.env.LAYRA_MODEL_API_KEY_ENV, endpoint: process.env.LAYRA_MODEL_API_ENDPOINT, model: process.env.LAYRA_MODEL, key: process.env.MOCK_MODEL_KEY };
@@ -34,9 +39,9 @@ test('OpenAI-compatible model client performs a real local HTTP request and pars
     const result = await client.chat([{ role: 'user', content: 'hello' }], { maxTokens: 10 });
     assert.equal(result.content, 'OK');
   } finally {
-    mock.server.close();
     const restore = (key, value) => value === undefined ? delete process.env[key] : (process.env[key] = value);
     restore('LAYRA_MODEL_PROVIDER', previous.provider); restore('LAYRA_MODEL_API_KEY_ENV', previous.env); restore('LAYRA_MODEL_API_ENDPOINT', previous.endpoint); restore('LAYRA_MODEL', previous.model); restore('MOCK_MODEL_KEY', previous.key);
+    await stopMock(mock.server);
   }
 });
 
@@ -45,7 +50,7 @@ test('DeepSeek client performs a real local HTTP request with JSON response mode
     const payload = await readBody(req);
     assert.equal(payload.model, 'mock-deepseek');
     assert.deepEqual(payload.response_format, { type: 'json_object' });
-    res.writeHead(200, { 'content-type': 'application/json' });
+    res.writeHead(200, { 'content-type': 'application/json', connection: 'close' });
     res.end(JSON.stringify({ choices: [{ message: { content: JSON.stringify({ insight: 'verified', confidence: 0.9 }) } }] }));
   });
   const { DeepSeekClient } = await import('../dist/deepseek-client.js');
@@ -55,6 +60,6 @@ test('DeepSeek client performs a real local HTTP request with JSON response mode
     assert.equal(result.insight, 'verified');
     assert.equal(result.confidence, 0.9);
   } finally {
-    mock.server.close();
+    await stopMock(mock.server);
   }
 });
