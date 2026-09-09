@@ -20,12 +20,26 @@ export interface ModelToolTurn {
   raw: any;
 }
 
-export function normalizeToolCalls(raw: any): ToolCall[] {
+/** Map Layra's dotted internal tool names to OpenAI/NVIDIA-compatible names. */
+export function toProviderToolName(name: string): string {
+  return String(name || '').trim().replace(/[^a-zA-Z0-9_-]/g, '_');
+}
+
+export function toInternalToolName(name: string, tools: Tool[]): string {
+  const candidate = String(name || '').trim();
+  const exact = tools.find(tool => tool.name === candidate);
+  if (exact) return exact.name;
+  const match = tools.find(tool => toProviderToolName(tool.name) === candidate);
+  return match?.name || candidate;
+}
+
+export function normalizeToolCalls(raw: any, tools: Tool[] = []): ToolCall[] {
   const calls = raw?.choices?.[0]?.message?.tool_calls;
   if (!Array.isArray(calls)) return [];
   return calls.flatMap((call: any, index: number) => {
-    const name = String(call?.function?.name || '').trim();
-    if (!name) return [];
+    const providerName = String(call?.function?.name || '').trim();
+    if (!providerName) return [];
+    const name = toInternalToolName(providerName, tools);
     let args: Record<string, any> = {};
     const source = call?.function?.arguments;
     if (typeof source === 'string') {
@@ -46,7 +60,7 @@ export function toOpenAICompatibleTools(tools: Tool[]): any[] {
   return tools.map(tool => ({
     type: 'function',
     function: {
-      name: tool.name,
+      name: toProviderToolName(tool.name),
       description: tool.description,
       parameters: {
         type: 'object',
@@ -67,11 +81,11 @@ export function normalizeToolResult(value: any, maxChars = 12000): string {
   return text.length > maxChars ? `${text.slice(0, maxChars)}\n[tool result truncated]` : text;
 }
 
-export function extractModelTurn(raw: any): ModelToolTurn {
+export function extractModelTurn(raw: any, tools: Tool[] = []): ModelToolTurn {
   const message = raw?.choices?.[0]?.message || {};
   return {
     content: typeof message.content === 'string' ? message.content : '',
-    toolCalls: normalizeToolCalls(raw),
+    toolCalls: normalizeToolCalls(raw, tools),
     raw
   };
 }
