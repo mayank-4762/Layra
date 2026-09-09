@@ -1,6 +1,8 @@
 import { ToolRegistry } from '../tools/registry';
 import { AgentState } from '../agent/state';
 import { NativeRuntime } from './native-runtime';
+import { MemoryStore } from '../core/memory';
+import { normalizeToolResult } from '../core/tool-protocol';
 
 export interface ToolExecutionResult {
   success: boolean;
@@ -10,33 +12,35 @@ export interface ToolExecutionResult {
   metadata?: Record<string, any>;
 }
 
-/** Single execution boundary for Layra. No external agent/gateway is involved. */
+/** Single execution boundary for Layra; no Hermes/OpenClaw process or gateway is required. */
 export class ToolExecutor {
   private readonly toolRegistry: ToolRegistry;
   private readonly state: AgentState;
   private readonly runtime: NativeRuntime;
+  private readonly memoryStore: MemoryStore;
 
   constructor(toolRegistry: ToolRegistry, state: AgentState) {
     this.toolRegistry = toolRegistry;
     this.state = state;
     this.runtime = new NativeRuntime();
+    this.memoryStore = new MemoryStore();
   }
 
   async execute(toolName: string, parameters: Record<string, any>, signal?: AbortSignal): Promise<ToolExecutionResult> {
     const startTime = Date.now();
     let result: ToolExecutionResult;
     try {
-      if (!this.toolRegistry.isToolAvailable(toolName)) {
-        result = this.fail(toolName, 'Tool is not available or permission is not granted', startTime);
-      } else if (signal?.aborted) {
-        result = this.fail(toolName, 'Execution aborted', startTime);
-      } else {
+      if (!this.toolRegistry.isToolAvailable(toolName)) result = this.fail(toolName, 'Tool is not available or permission is not granted', startTime);
+      else if (signal?.aborted) result = this.fail(toolName, 'Execution aborted', startTime);
+      else {
+        await this.toolRegistry.runBeforeHooks(toolName, parameters, { signal, goal: this.state.currentGoal, sessionId: this.state.id });
         result = await this.dispatch(toolName, parameters, startTime, signal);
       }
     } catch (error) {
       result = this.fail(toolName, error instanceof Error ? error.message : String(error), startTime);
     }
 
+    await this.toolRegistry.runAfterHooks(toolName, parameters, result, { signal, goal: this.state.currentGoal, sessionId: this.state.id });
     const action = {
       actionId: `action_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`,
       stepId: null,
@@ -51,8 +55,7 @@ export class ToolExecutor {
     this.state.lastActionResult = action;
     this.state.executionHistory.push(action);
     this.state.totalActions += 1;
-    const successes = this.state.executionHistory.filter(item => item.success).length;
-    this.state.successRate = successes / this.state.executionHistory.length;
+    this.state.successRate = this.state.executionHistory.filter(item => item.success).length / this.state.executionHistory.length;
     this.state.averageResponseTime = this.state.executionHistory.reduce((sum, item) => sum + item.executionTime, 0) / this.state.executionHistory.length;
     this.state.lastUpdated = new Date();
     return result;
@@ -72,32 +75,33 @@ export class ToolExecutor {
       case 'system.time': return this.ok(new Date().toISOString(), startTime, { executor: 'native-system' });
       case 'system.info': return this.wrap(this.runtime.systemInfo(), startTime);
       case 'memory.get': {
-        const key = String(parameters.key || '');
-        return this.ok((this.state.longTermMemory || {})[key] ?? parameters.default ?? null, startTime, { executor: 'layra-memory' });
+        const query = String(parameters.query || '');
+        const records = query ? await this.memoryStore.search(query, Math.max(1, Number(parameters.limit || 8))) : await this.memoryStore.recent(Math.max(1, Number(parameters.limit || 8)));
+        return this.ok(records, startTime, { executor: 'layra-memory', persistent: true });
       }
       case 'memory.set': {
-        const key = String(parameters.key || '');
-        if (!key) return this.fail(toolName, 'Memory key is required', startTime);
-        this.state.longTermMemory = { ...(this.state.longTermMemory || {}), [key]: parameters.value };
-        return this.ok(true, startTime, { executor: 'layra-memory' });
+        const content = String(parameters.content || '').trim();
+        if (!content) return this.fail(toolName, 'Memory content is required', startTime);
+        const kind = ['fact', 'lesson', 'preference', 'procedure', 'event'].includes(String(parameters.kind)) ? String(parameters.kind) as any : 'fact';
+        const record = await this.memoryStore.remember({ kind, content, tags: Array.isArray(parameters.tags) ? parameters.tags.map(String).slice(0, 20) : [], importance: Math.max(0, Math.min(10, Number(parameters.importance ?? 5))), source: parameters.source ? String(parameters.source) : 'Layra' });
+        this.state.longTermMemory.lastRecord = record;
+        return this.ok(record, startTime, { executor: 'layra-memory', persistent: true });
       }
       default: return this.fail(toolName, `Unsupported tool: ${toolName}`, startTime);
     }
   }
 
-  private wrap(output: { value: any; metadata: Record<string, any> }, startTime: number): ToolExecutionResult {
-    return this.ok(output.value, startTime, output.metadata);
-  }
+  private wrap(output: { value: any; metadata: Record<string, any> }, startTime: number): ToolExecutionResult { return this.ok(output.value, startTime, output.metadata); }
   private ok(value: any, startTime: number, metadata: Record<string, any> = {}): ToolExecutionResult { return { success: true, result: value, error: null, executionTime: Date.now() - startTime, metadata }; }
   private fail(toolName: string, error: string, startTime: number, metadata: Record<string, any> = {}): ToolExecutionResult { return { success: false, result: null, error: `[${toolName}] ${error}`, executionTime: Date.now() - startTime, metadata }; }
 
+  /** Abort is propagated to native runtime calls, not just raced at the Promise layer. */
   async executeWithTimeout(toolName: string, parameters: Record<string, any>, timeoutMs = 30000): Promise<ToolExecutionResult> {
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), Math.max(1, timeoutMs));
-    try {
-      return await this.execute(toolName, parameters, controller.signal);
-    } finally {
-      clearTimeout(timer);
-    }
+    try { return await this.execute(toolName, parameters, controller.signal); }
+    finally { clearTimeout(timer); }
   }
+
+  formatForModel(result: ToolExecutionResult, maxChars = 12000): string { return normalizeToolResult({ success: result.success, result: result.result, error: result.error }, maxChars); }
 }
