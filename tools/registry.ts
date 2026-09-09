@@ -20,13 +20,7 @@ export class ToolRegistry {
   getUnavailableTools(): Tool[] { return this.getAllTools().filter(tool => !this.isToolAvailable(tool.name)); }
   getPermissionStatus(toolName: string): ToolPermission | null { return this.permissions.get(toolName) || null; }
   getToolsWithPermissions(): Array<{ tool: Tool; permission: ToolPermission }> { return this.getAllTools().map(tool => ({ tool, permission: this.permissions.get(tool.name)! })); }
-  async runBeforeHooks(toolName: string, parameters: Record<string, any>, context: ToolContext): Promise<void> {
-    const tool = this.requireAllowed(toolName);
-    const serialized = JSON.stringify(parameters);
-    const findings = inspectUntrustedText(serialized);
-    if (findings.some(f => f.severity === 'high') && tool.permissions.some(p => ['filesystem.write', 'shell.execute', 'web.post', 'browser.control', 'mcp'].includes(p))) throw new Error(`High-risk input blocked for ${toolName}: ${findings[0].code}`);
-    for (const hook of this.hooks) await hook.before?.(tool, parameters, context);
-  }
+  async runBeforeHooks(toolName: string, parameters: Record<string, any>, context: ToolContext): Promise<void> { const tool = this.requireAllowed(toolName); const serialized = JSON.stringify(parameters); const findings = inspectUntrustedText(serialized); if (findings.some(f => f.severity === 'high') && tool.permissions.some(p => ['filesystem.write', 'shell.execute', 'web.post', 'browser.control', 'mcp', 'delegation'].includes(p))) throw new Error(`High-risk input blocked for ${toolName}: ${findings[0].code}`); for (const hook of this.hooks) await hook.before?.(tool, parameters, context); }
   async runAfterHooks(toolName: string, parameters: Record<string, any>, result: { success: boolean; result: any; error: string | null }, context: ToolContext): Promise<void> { const tool = this.tools.get(toolName); if (!tool) return; for (const hook of this.hooks) await hook.after?.(tool, parameters, result, context); }
   requireAllowed(toolName: string): Tool { const tool = this.tools.get(toolName); if (!tool) throw new Error(`Unknown tool: ${toolName}`); if (!this.isToolAvailable(toolName)) throw new Error(`Tool is not available or permission is not granted: ${toolName}`); return tool; }
   async executeTool(toolName: string, _parameters: Record<string, any>): Promise<{ success: boolean; result: any; error: string | null }> { return { success: false, result: null, error: `Direct registry execution disabled for '${toolName}'. Use ToolExecutor.` }; }
@@ -57,6 +51,7 @@ export class ToolRegistry {
     add({ name: 'scheduler.add', description: 'Persist a future or recurring Layra prompt', parameters: { prompt: { type: 'string' }, runAt: { type: 'string' }, intervalMs: { type: 'number' } }, returns: 'object', permissions: ['scheduler'], isAvailable: true });
     add({ name: 'scheduler.list', description: 'List durable Layra scheduled jobs', parameters: {}, returns: 'array', permissions: ['scheduler'], isAvailable: true });
     add({ name: 'scheduler.remove', description: 'Remove a durable Layra scheduled job', parameters: { id: { type: 'string' } }, returns: 'boolean', permissions: ['scheduler'], isAvailable: true });
+    add({ name: 'delegate.run', description: 'Run a bounded internal child task using the same Layra runtime and permissions', parameters: { prompt: { type: 'string' }, maxRounds: { type: 'number', default: 6 } }, returns: 'object', permissions: ['delegation'], isAvailable: true });
   }
   grantBasicPermissions(grantedBy = 'system'): void {
     const safe = ['filesystem.read', 'filesystem.list', 'web.get', 'memory.get', 'memory.set', 'system.info', 'system.time'];
@@ -67,6 +62,7 @@ export class ToolRegistry {
     if (process.env.LAYRA_ALLOW_BROWSER === 'true' && process.env.LAYRA_CDP_WS_URL) for (const name of ['browser.navigate','browser.snapshot','browser.click','browser.type']) this.grantPermission(name, grantedBy, 'Explicitly enabled by LAYRA_ALLOW_BROWSER');
     if (process.env.LAYRA_ALLOW_MCP === 'true' && process.env.LAYRA_MCP_SERVER_COMMAND) for (const name of ['mcp.list','mcp.call']) this.grantPermission(name, grantedBy, 'Explicitly enabled by LAYRA_ALLOW_MCP');
     if (process.env.LAYRA_ALLOW_SCHEDULER === 'true') for (const name of ['scheduler.add','scheduler.list','scheduler.remove']) this.grantPermission(name, grantedBy, 'Explicitly enabled by LAYRA_ALLOW_SCHEDULER');
+    if (process.env.LAYRA_ALLOW_DELEGATION === 'true') this.grantPermission('delegate.run', grantedBy, 'Explicitly enabled by LAYRA_ALLOW_DELEGATION');
   }
   reset(): void { this.tools.clear(); this.permissions.clear(); this.registerBasicTools(); }
 }
