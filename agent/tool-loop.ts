@@ -7,12 +7,19 @@ import { normalizeToolResult, toProviderToolName } from '../core/tool-protocol';
 export interface ToolLoopOptions { maxRounds?: number; maxToolCallsPerRound?: number; signal?: AbortSignal; client?: ModelClient; }
 export interface ToolLoopResult { content: string; rounds: number; toolCalls: number; stoppedReason: 'completed' | 'no_model' | 'aborted' | 'round_limit' | 'tool_error'; messages: ChatMessage[]; }
 
-/** Provider-neutral model↔tool loop. The model client is injectable so the runtime can be tested without network access. */
+/**
+ * Provider-neutral model↔tool loop.
+ *
+ * The loop deliberately supports longer goals without making the budget unbounded:
+ * a normal turn gets up to 16 model/tool rounds by default, with an absolute cap of 64.
+ */
 export async function runToolLoop(initialMessages: ChatMessage[], registry: ToolRegistry, executor: ToolExecutor, options: ToolLoopOptions = {}): Promise<ToolLoopResult> {
   const client = options.client || createModelClient();
   if (!client) return { content: '', rounds: 0, toolCalls: 0, stoppedReason: 'no_model', messages: [...initialMessages] };
-  const maxRounds = Math.max(1, Math.min(32, options.maxRounds ?? 8));
-  const maxCalls = Math.max(1, Math.min(32, options.maxToolCallsPerRound ?? 8));
+  const configuredRounds = Number.isFinite(options.maxRounds) ? Number(options.maxRounds) : Number(process.env.LAYRA_DEFAULT_MAX_TOOL_ROUNDS || 16);
+  const configuredCalls = Number.isFinite(options.maxToolCallsPerRound) ? Number(options.maxToolCallsPerRound) : Number(process.env.LAYRA_DEFAULT_MAX_TOOL_CALLS_PER_ROUND || 8);
+  const maxRounds = Math.max(1, Math.min(64, configuredRounds));
+  const maxCalls = Math.max(1, Math.min(32, configuredCalls));
   let messages = [...initialMessages];
   let totalCalls = 0;
 
@@ -73,5 +80,11 @@ export async function runToolLoop(initialMessages: ChatMessage[], registry: Tool
     }
   }
 
-  return { content: '', rounds: maxRounds, toolCalls: totalCalls, stoppedReason: 'round_limit', messages };
+  return {
+    content: `The tool-loop reached its execution budget after ${maxRounds} rounds. Continue from the existing evidence/state rather than restarting the task.`,
+    rounds: maxRounds,
+    toolCalls: totalCalls,
+    stoppedReason: 'round_limit',
+    messages
+  };
 }
