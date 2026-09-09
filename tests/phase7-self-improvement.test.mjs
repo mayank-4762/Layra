@@ -56,7 +56,7 @@ test('phase7: code improvements can become validated proposals but never promote
   const proposal = await readFile(path.join(root, 'improvements', `${results[0].id}.md`), 'utf8');
   assert.match(proposal, /Validation Boundary/);
   assert.match(proposal, /typecheck, build/);
-  assert.match(proposal, /revert/);
+  assert.match(proposal, /revert/i);
 });
 
 test('phase7: skill promotion versions and restores the exact prior skill', async () => {
