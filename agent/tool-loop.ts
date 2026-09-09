@@ -2,7 +2,7 @@ import { ChatMessage, createModelClient, ModelClient } from '../config/model-pro
 import { ToolExecutor } from '../tools/executor';
 import { ToolRegistry } from '../tools/registry';
 import { compressMessages } from '../core/context';
-import { normalizeToolResult, extractModelTurn, toProviderToolName } from '../core/tool-protocol';
+import { normalizeToolResult, toProviderToolName } from '../core/tool-protocol';
 
 export interface ToolLoopOptions { maxRounds?: number; maxToolCallsPerRound?: number; signal?: AbortSignal; client?: ModelClient; }
 export interface ToolLoopResult { content: string; rounds: number; toolCalls: number; stoppedReason: 'completed' | 'no_model' | 'aborted' | 'round_limit' | 'tool_error'; messages: ChatMessage[]; }
@@ -38,7 +38,7 @@ export async function runToolLoop(initialMessages: ChatMessage[], registry: Tool
       return { content: `Model error: ${error instanceof Error ? error.message : String(error)}`, rounds: round, toolCalls: totalCalls, stoppedReason: 'tool_error', messages };
     }
 
-    const normalized = extractModelTurn(turn.raw, availableTools);
+    const normalized = turn;
     const rawToolCalls = turn.raw?.choices?.[0]?.message?.tool_calls;
     messages.push({ role: 'assistant', content: normalized.content, ...(Array.isArray(rawToolCalls) && rawToolCalls.length ? { tool_calls: rawToolCalls } : {}) });
     if (!normalized.toolCalls.length) return { content: normalized.content, rounds: round, toolCalls: totalCalls, stoppedReason: 'completed', messages };
@@ -63,9 +63,6 @@ export async function runToolLoop(initialMessages: ChatMessage[], registry: Tool
       });
     }
 
-    // Every assistant tool_call must receive a tool result before the next model request.
-    // Calls beyond the per-round budget are represented as explicit failures instead of
-    // being silently dropped, which keeps OpenAI-compatible transcripts valid.
     for (const call of uniqueCalls.slice(maxCalls)) {
       messages.push({
         role: 'tool',
