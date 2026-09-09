@@ -1,6 +1,6 @@
 # Layra on Android / Termux
 
-Layra is designed to run as one self-contained Node.js agent runtime. Hermes-derived reasoning/planning, OpenClaw-derived execution/control, and DHS/DeepSeek evaluation are compiled into Layra; Android does **not** need a separate Hermes or OpenClaw agent installation.
+Layra is one self-contained Node.js agent runtime. Hermes-derived reasoning/planning, OpenClaw-derived execution/control, and DHS/DeepSeek evaluation are fused into Layra; Android does **not** need a separate Hermes or OpenClaw agent installation.
 
 ## 1. Install the Android runtime
 
@@ -33,7 +33,22 @@ export DEEPSEEK_API_KEY='your-key'
 
 NVIDIA is the current default reasoning model provider. The provider layer is runtime-configurable. DHS uses the direct DeepSeek API.
 
-## 4. Enable capabilities deliberately
+## 4. Run Layra interactively or autonomously
+
+```sh
+# One conversational turn
+npm start -- --once "Inspect the workspace and tell me what needs fixing."
+
+# Interactive session
+npm start -- --chat
+
+# Autonomous goal
+LAYRA_GOAL='Inspect this workspace, identify the highest-priority runtime problem, fix it, verify the fix, and record the lesson.' npm start
+```
+
+The interactive path uses the same model→tool→result loop as autonomous execution. Tool calls are bounded, cancellable, permission-checked, and returned to the model as structured evidence.
+
+## 5. Enable capabilities deliberately
 
 Safe read-only tools are enabled by default. Consequential capabilities require explicit environment flags:
 
@@ -41,26 +56,41 @@ Safe read-only tools are enabled by default. Consequential capabilities require 
 export LAYRA_ALLOW_LOCAL_WRITE=true
 export LAYRA_ALLOW_SHELL=true
 export LAYRA_ALLOW_WEB_POST=true
+export LAYRA_ALLOW_SCHEDULER=true
+export LAYRA_ALLOW_DELEGATION=true
 ```
 
-Use the minimum set required for the task. Shell commands remain subject to Layra's execution safety policy and filesystem access is constrained to `LAYRA_WORKSPACE_ROOT` (the current directory by default).
-
-## 5. Run an autonomous goal
+For browser automation, connect an existing Chromium instance through Chrome DevTools Protocol:
 
 ```sh
-LAYRA_GOAL='Inspect this workspace, identify the highest-priority runtime problem, fix it, verify the fix, and record the lesson.' npm start
+export LAYRA_ALLOW_BROWSER=true
+export LAYRA_CDP_WS_URL='ws://127.0.0.1:9222/devtools/page/<target-id>'
 ```
 
-Layra will keep one state machine around the entire task:
+Browser navigation is HTTP(S)-validated and browser operations have bounded timeouts and abort handling.
 
-`UNDERSTAND → RECALL → DECIDE/PLAN → ACT → OBSERVE → REASON → REFLECT → REPLAN → VERIFY → LEARN → COMPLETE`
+For MCP, configure one trusted stdio server explicitly rather than allowing the model to choose arbitrary executables:
 
-The planner uses the integrated Hermes-derived reasoning layer. Tool execution is performed by Layra's native execution/control plane. DHS/DeepSeek evaluates evidence, rejects unsupported completion, stores lessons, and can create reusable procedural skills.
+```sh
+export LAYRA_ALLOW_MCP=true
+export LAYRA_MCP_SERVER_COMMAND='your-mcp-server'
+export LAYRA_MCP_SERVER_ARGS='["arg1","arg2"]'
+```
 
-## 6. Persistence
+Shell commands remain subject to Layra's execution safety policy and filesystem access is constrained to `LAYRA_WORKSPACE_ROOT` (the current directory by default).
 
-Runtime state is stored under `.state/` by default. Layra keeps session state, events, structured memory, and learned skills there. The workspace `skills/` directory may also contain manually supplied skills.
+## 6. Scheduling and internal delegation
+
+Scheduled prompts are persisted in `.state/scheduler.json`. The CLI scheduler executes due prompts through the **same Layra runtime**, not a second agent process. One-shot and recurring jobs are available through `scheduler.add`.
+
+Internal delegation creates bounded child tasks that reuse Layra's existing model provider, tool registry, permissions, workspace, and executor. It does not install or launch Hermes/OpenClaw as child agents.
+
+## 7. Persistence and learning
+
+Runtime state is stored under `.state/` by default. Layra keeps session state, a durable event journal, structured memory, schedules, and learned skills there. `session.search` provides bounded retrieval over the event journal.
+
+The workspace `skills/` directory may also contain manually supplied procedural skills.
 
 ## Android notes
 
-Android may suspend long-running Termux processes. For unattended 24/7 work, keep the process on a persistent machine and use Android as a control surface. That is an infrastructure choice, not a requirement to install or run a second agent: Layra itself remains the single agent runtime.
+Android/Termux is a supported runtime target, but Android may suspend long-running processes. For unattended 24/7 work, keep the process on a persistent machine and use Android as a control surface. This is an infrastructure choice, not a requirement to install or run a second agent: Layra itself remains the single agent runtime.
