@@ -32,6 +32,13 @@ export class ToolRegistry {
   async executeTool(toolName: string, _parameters: Record<string, any>): Promise<{ success: boolean; result: any; error: string | null }> { return { success: false, result: null, error: `Direct registry execution disabled for '${toolName}'. Use ToolExecutor.` }; }
 
   registerMcpTools(remoteTools: any[]): string[] {
+    // A refresh represents the current remote catalog. Remove previous MCP registrations first.
+    for (const localName of this.mcpToolMap.keys()) {
+      this.tools.delete(localName);
+      this.permissions.delete(localName);
+    }
+    this.mcpToolMap.clear();
+
     const added: string[] = [];
     for (const remote of remoteTools.slice(0, 100)) {
       const originalName = String(remote?.name || '').trim();
