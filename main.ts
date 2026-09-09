@@ -46,9 +46,20 @@ async function runOnce(prompt: string): Promise<void> {
   const supervisor = startReliability(agent);
   const scheduler = startScheduler(agent);
   try {
-    const result = await agent.runInteractiveTurn(prompt);
-    if (result.stoppedReason === 'no_model') { console.error('No model API key is configured.'); process.exitCode = 2; return; }
-    console.log(result.content || `[Layra stopped: ${result.stoppedReason}; rounds=${result.rounds}; toolCalls=${result.toolCalls}]`);
+    console.log('Layra: starting interactive task...');
+    const started = Date.now();
+    const progressTimer = setInterval(() => {
+      const seconds = Math.floor((Date.now() - started) / 1000);
+      console.log(`Layra: working... ${seconds}s elapsed`);
+    }, 3000);
+    try {
+      const result = await agent.runInteractiveTurn(prompt);
+      if (result.stoppedReason === 'no_model') { console.error('No model API key is configured.'); process.exitCode = 2; return; }
+      console.log(`Layra: completed in ${Math.floor((Date.now() - started) / 1000)}s (rounds=${result.rounds}, toolCalls=${result.toolCalls}).`);
+      console.log(result.content || `[Layra stopped: ${result.stoppedReason}; rounds=${result.rounds}; toolCalls=${result.toolCalls}]`);
+    } finally {
+      clearInterval(progressTimer);
+    }
   } finally { await supervisor.stop('run_once_complete'); scheduler?.stop(); }
 }
 
@@ -83,10 +94,21 @@ async function runChat(): Promise<void> {
       if (prompt === '/help') { console.log('/help, /exit, /status'); continue; }
       if (prompt === '/status') { console.log(JSON.stringify(agent.getStatistics(), null, 2)); continue; }
 
-      const result = await agent.runInteractiveTurn(prompt);
-      if (shuttingDown) break;
-      if (result.stoppedReason === 'no_model') console.error('No model API key is configured.');
-      else console.log(`layra> ${result.content || `[stopped: ${result.stoppedReason}]`}`);
+      console.log('Layra: starting task...');
+      const started = Date.now();
+      const progressTimer = setInterval(() => {
+        const seconds = Math.floor((Date.now() - started) / 1000);
+        console.log(`Layra: working... ${seconds}s elapsed`);
+      }, 3000);
+      try {
+        const result = await agent.runInteractiveTurn(prompt);
+        if (shuttingDown) break;
+        if (result.stoppedReason === 'no_model') console.error('No model API key is configured.');
+        else console.log(`layra> ${result.content || `[stopped: ${result.stoppedReason}]`}`);
+        console.log(`Layra: turn finished in ${Math.floor((Date.now() - started) / 1000)}s (rounds=${result.rounds}, toolCalls=${result.toolCalls}).`);
+      } finally {
+        clearInterval(progressTimer);
+      }
     }
   } finally {
     shutdown();
