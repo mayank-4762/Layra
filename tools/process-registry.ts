@@ -1,10 +1,11 @@
-import { ChildProcessWithoutNullStreams, spawn } from 'child_process';
+import { ChildProcessByStdio, spawn } from 'child_process';
+import { Readable } from 'stream';
 import path from 'path';
 import { assertSafeShellCommand } from '../core/security';
 
 export type ProcessStatus = 'running' | 'completed' | 'failed' | 'killed';
 export interface ProcessSnapshot { id: string; command: string; cwd: string; status: ProcessStatus; pid?: number; exitCode?: number | null; signal?: NodeJS.Signals | null; output: string; truncated: boolean; startedAt: string; endedAt?: string; }
-interface Session { id: string; command: string; cwd: string; child: ChildProcessWithoutNullStreams; status: ProcessStatus; output: string; truncated: boolean; startedAt: number; endedAt?: number; exitCode?: number | null; signal?: NodeJS.Signals | null; expiresAt?: number; }
+interface Session { id: string; command: string; cwd: string; child: ChildProcessByStdio<null, Readable, Readable>; status: ProcessStatus; output: string; truncated: boolean; startedAt: number; endedAt?: number; exitCode?: number | null; signal?: NodeJS.Signals | null; expiresAt?: number; }
 
 /** Bounded foreground/background process lifecycle adapted from OpenClaw's process-session model. */
 export class ProcessRegistry {
