@@ -63,7 +63,7 @@ export LAYRA_ALLOW_BROWSER=true
 export LAYRA_CDP_WS_URL='ws://127.0.0.1:9222/devtools/page/<target-id>'
 ```
 
-Browser capabilities include navigation, visible-text snapshots, accessibility-tree snapshots, screenshots, tab discovery, CSS click/type, key dispatch, bounded timeouts, and abort handling. Full Android accessibility control is not provided by this Node runtime.
+Browser capabilities include navigation, visible-text snapshots, accessibility-tree snapshots, screenshots, tab discovery/selection, CSS click/type, key dispatch, bounded timeouts, and abort handling.
 
 For MCP, configure one trusted stdio server explicitly:
 
@@ -79,7 +79,17 @@ Shell commands remain subject to Layra's execution safety policy and filesystem 
 
 ## 6. Android / Termux helpers
 
-With `LAYRA_ALLOW_ANDROID=true` and the Termux:API package installed, Layra can use in-process Android helpers for toast messages, notifications, opening HTTP(S) URLs, and clipboard get/set. These are capability tools inside Layra; they are not a separate agent.
+With `LAYRA_ALLOW_ANDROID=true` and the Termux:API package installed, Layra can use in-process Android helpers for toast messages, notifications, opening HTTP(S) URLs, and clipboard get/set.
+
+For full Android UI control, build and install the native companion under `android/layra-bridge`. It provides an AccessibilityService-backed loopback bridge with UI-tree inspection, tap, type, swipe, back/home, app launch, and screenshots. Enable the service in Android Accessibility settings, copy the pairing token shown by the app, and configure:
+
+```sh
+export LAYRA_ALLOW_ANDROID_CONTROL=true
+export LAYRA_ANDROID_BRIDGE_URL='http://127.0.0.1:8765'
+export LAYRA_ANDROID_BRIDGE_TOKEN='the-token-shown-by-the-app'
+```
+
+The native app is a control surface only. Planning, policy, verification, memory, learning, and tool selection remain in the same `HybridAgent` runtime.
 
 ## 7. Scheduling and internal delegation
 
@@ -91,4 +101,4 @@ Runtime state is stored under `.state/` by default. Layra keeps session snapshot
 
 ## Android notes
 
-Android/Termux is a supported runtime target, but Android may suspend long-running processes. A native APK, AccessibilityService, foreground service, or deeper system-control layer still requires a dedicated Android application component; those are not falsely presented as complete in this runtime.
+Android/Termux is a supported runtime target. The native companion requires Android 11 / API 30+ and explicit user enablement of the AccessibilityService. Android may still suspend long-running Termux processes; use a persistent host for unattended 24/7 operation when necessary.
