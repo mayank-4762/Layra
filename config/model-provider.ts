@@ -98,7 +98,7 @@ export function createModelClient(apiKey?: string): ModelClient | null {
     },
     async chatWithTools(messages, options) {
       const raw = await request(messages, options);
-      return extractModelTurn(raw);
+      return extractModelTurn(raw, options.tools);
     }
   };
 }
