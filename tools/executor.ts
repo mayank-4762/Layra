@@ -3,6 +3,7 @@ import { AgentState } from '../agent/state';
 import { NativeRuntime } from './native-runtime';
 import { ProcessRegistry } from './process-registry';
 import { MemoryStore } from '../core/memory';
+import { searchSessionEvents } from '../core/session-search';
 import { normalizeToolResult } from '../core/tool-protocol';
 import { assertSafeShellCommand } from '../core/security';
 import { BrowserCdp } from './browser-cdp';
@@ -16,19 +17,14 @@ export interface ToolExecutionResult { success: boolean; result: any; error: str
 export class ToolExecutor {
   private readonly toolRegistry: ToolRegistry; private readonly state: AgentState; private readonly runtime: NativeRuntime; private readonly processRegistry: ProcessRegistry; private readonly memoryStore: MemoryStore; private readonly browser: BrowserCdp; private readonly mcp: LayraMcpClient; private readonly scheduler: LayraScheduler; private readonly delegator: LayraDelegator;
   constructor(toolRegistry: ToolRegistry, state: AgentState) { this.toolRegistry = toolRegistry; this.state = state; this.runtime = new NativeRuntime(); this.processRegistry = new ProcessRegistry(); this.memoryStore = new MemoryStore(); this.browser = new BrowserCdp(); this.mcp = new LayraMcpClient(); this.scheduler = new LayraScheduler(); this.delegator = new LayraDelegator(toolRegistry, this); }
-
   async execute(toolName: string, parameters: Record<string, any>, signal?: AbortSignal): Promise<ToolExecutionResult> {
     const startTime = Date.now(); let result: ToolExecutionResult;
-    try {
-      if (!this.toolRegistry.isToolAvailable(toolName)) result = this.fail(toolName, 'Tool is not available or permission is not granted', startTime);
-      else if (signal?.aborted) result = this.fail(toolName, 'Execution aborted', startTime);
-      else { await this.toolRegistry.runBeforeHooks(toolName, parameters, { signal, goal: this.state.currentGoal, sessionId: this.state.id }); result = await this.dispatch(toolName, parameters, startTime, signal); }
-    } catch (error) { result = this.fail(toolName, error instanceof Error ? error.message : String(error), startTime); }
+    try { if (!this.toolRegistry.isToolAvailable(toolName)) result = this.fail(toolName, 'Tool is not available or permission is not granted', startTime); else if (signal?.aborted) result = this.fail(toolName, 'Execution aborted', startTime); else { await this.toolRegistry.runBeforeHooks(toolName, parameters, { signal, goal: this.state.currentGoal, sessionId: this.state.id }); result = await this.dispatch(toolName, parameters, startTime, signal); } }
+    catch (error) { result = this.fail(toolName, error instanceof Error ? error.message : String(error), startTime); }
     try { await this.toolRegistry.runAfterHooks(toolName, parameters, result, { signal, goal: this.state.currentGoal, sessionId: this.state.id }); } catch (error) { result = { ...result, success: false, error: `${result.error ? `${result.error}; ` : ''}after-hook failed: ${error instanceof Error ? error.message : String(error)}` }; }
     const action = { actionId: `action_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`, stepId: null, tool: toolName, success: result.success, result: result.result, error: result.error, executionTime: result.executionTime, timestamp: new Date(), metadata: result.metadata || {} };
     this.state.lastActionResult = action; this.state.executionHistory.push(action); this.state.totalActions += 1; this.state.successRate = this.state.executionHistory.filter(item => item.success).length / this.state.executionHistory.length; this.state.averageResponseTime = this.state.executionHistory.reduce((sum, item) => sum + item.executionTime, 0) / this.state.executionHistory.length; this.state.lastUpdated = new Date(); return result;
   }
-
   private async dispatch(toolName: string, parameters: Record<string, any>, startTime: number, signal?: AbortSignal): Promise<ToolExecutionResult> {
     switch (toolName) {
       case 'filesystem.read': return this.wrap(await this.runtime.filesystemRead(parameters), startTime);
@@ -46,6 +42,7 @@ export class ToolExecutor {
       case 'system.info': return this.wrap(this.runtime.systemInfo(), startTime);
       case 'memory.get': { const query = String(parameters.query || ''); const records = query ? await this.memoryStore.search(query, Math.max(1, Number(parameters.limit || 8))) : await this.memoryStore.recent(Math.max(1, Number(parameters.limit || 8))); return this.ok(records, startTime, { executor: 'layra-memory', persistent: true }); }
       case 'memory.set': { const content = String(parameters.content || '').trim(); if (!content) return this.fail(toolName, 'Memory content is required', startTime); const kind = ['fact','lesson','preference','procedure','event'].includes(String(parameters.kind)) ? String(parameters.kind) as any : 'fact'; const record = await this.memoryStore.remember({ kind, content, tags: Array.isArray(parameters.tags) ? parameters.tags.map(String).slice(0, 20) : [], importance: Math.max(0, Math.min(10, Number(parameters.importance ?? 5))), source: parameters.source ? String(parameters.source) : 'Layra' }); this.state.longTermMemory.lastRecord = record; return this.ok(record, startTime, { executor: 'layra-memory', persistent: true }); }
+      case 'session.search': return this.ok(await searchSessionEvents(String(parameters.query || ''), Math.max(1, Number(parameters.limit || 20))), startTime, { executor: 'layra-session-search', persistent: true });
       case 'browser.navigate': return this.ok(await this.browser.navigate(String(parameters.url || ''), signal), startTime, { executor: 'chromium-cdp' });
       case 'browser.snapshot': return this.ok(await this.browser.snapshot(signal), startTime, { executor: 'chromium-cdp' });
       case 'browser.click': return this.ok(await this.browser.click(String(parameters.selector || ''), signal), startTime, { executor: 'chromium-cdp' });
@@ -59,7 +56,6 @@ export class ToolExecutor {
       default: return this.fail(toolName, `Unsupported tool: ${toolName}`, startTime);
     }
   }
-
   private safeChildEnv(): NodeJS.ProcessEnv { const env: NodeJS.ProcessEnv = {}; const allow = new Set(['PATH','HOME','PWD','OLDPWD','TERM','LANG','LC_ALL','TMPDIR','PREFIX','ANDROID_ROOT','ANDROID_DATA','SHELL','USER','USERNAME','LOGNAME','NODE_PATH']); for (const [key,value] of Object.entries(process.env)) if (allow.has(key) || key.startsWith('LAYRA_')) env[key] = value; for (const key of ['NVIDIA_API_KEY','DEEPSEEK_API_KEY','OPENROUTER_API_KEY','OPENAI_API_KEY','ANTHROPIC_API_KEY','GOOGLE_API_KEY','GEMINI_API_KEY']) delete env[key]; return env; }
   private wrap(output: { value: any; metadata: Record<string, any> }, startTime: number): ToolExecutionResult { return this.ok(output.value, startTime, output.metadata); }
   private ok(value: any, startTime: number, metadata: Record<string, any> = {}): ToolExecutionResult { return { success: true, result: value, error: null, executionTime: Date.now() - startTime, metadata }; }
