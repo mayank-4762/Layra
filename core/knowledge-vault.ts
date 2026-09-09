@@ -1,6 +1,5 @@
 import { promises as fs } from 'fs';
 import path from 'path';
-import { createHash } from 'crypto';
 import { assertSafeRelativePath } from './security';
 import type { MemoryRecord } from './memory';
 
@@ -26,10 +25,9 @@ export class KnowledgeVault {
   async upsert(record: MemoryRecord): Promise<string> {
     await this.initialize();
     const kind = safeSegment(record.kind);
-    const slug = `${slugify(record.content).slice(0, 70) || 'memory'}-${record.id}`;
-    const relative = path.posix.join('Memory', kind, `${slug}.md`);
+    const relative = path.posix.join('Memory', kind, `${record.id}.md`);
     const target = assertSafeRelativePath(this.root, relative.split('/').join(path.sep));
-    const links = Array.isArray((record as any).relatedIds) ? (record as any).relatedIds.map(String).slice(0, 12) : [];
+    const links = Array.isArray(record.relatedIds) ? record.relatedIds.map(String).slice(0, 12) : [];
     const tags = record.tags.map(tag => `#${slugify(tag).replace(/-/g, '_')}`).filter(Boolean).slice(0, 20);
     const frontmatter = [
       '---',
@@ -46,7 +44,7 @@ export class KnowledgeVault {
       record.content.trim(),
       '',
       tags.length ? `Tags: ${tags.join(' ')}` : '',
-      links.length ? `Related: ${links.map(id => `[[${findVaultBasename(id)}]]`).join(' ')}` : '',
+      links.length ? `Related: ${links.map(id => `[[${id}]]`).join(' ')}` : '',
       ''
     ].filter(Boolean).join('\n');
     await this.atomicWrite(target, frontmatter);
@@ -73,7 +71,7 @@ export class KnowledgeVault {
     for (const [kind, items] of grouped) {
       body.push(`## ${kind}`, '');
       for (const record of items.slice().sort((a, b) => b.updatedAt.localeCompare(a.updatedAt)).slice(0, 100)) {
-        const relative = `Memory/${safeSegment(kind)}/${slugify(record.content).slice(0, 70) || 'memory'}-${record.id}`;
+        const relative = `Memory/${safeSegment(kind)}/${record.id}`;
         body.push(`- [[${relative}]] — importance ${record.importance.toFixed(2)} — ${escapeInline(record.content.slice(0, 180))}`);
       }
       body.push('');
@@ -94,12 +92,8 @@ export class KnowledgeVault {
   }
 }
 
-function slugify(value: string): string {
-  return value.normalize('NFKD').replace(/[\u0300-\u036f]/g, '').toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '').slice(0, 100);
-}
+function slugify(value: string): string { return value.normalize('NFKD').replace(/[\u0300-\u036f]/g, '').toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '').slice(0, 100); }
 function safeSegment(value: string): string { return slugify(value) || 'other'; }
 function yamlScalar(value: string): string { return JSON.stringify(value.replace(/\r?\n/g, ' ').slice(0, 500)); }
 function escapeHeading(value: string): string { return value.replace(/[#\r\n]/g, ' ').trim() || 'Memory'; }
 function escapeInline(value: string): string { return value.replace(/[\r\n]/g, ' ').replace(/\[\[/g, '[ [').replace(/\]\]/g, '] ]').slice(0, 500); }
-function findVaultBasename(id: string): string { return id; }
-export const knowledgeVaultKey = (record: Pick<MemoryRecord, 'id'>): string => createHash('sha256').update(record.id).digest('hex').slice(0, 16);
