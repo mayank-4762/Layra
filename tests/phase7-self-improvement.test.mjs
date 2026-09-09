@@ -33,7 +33,7 @@ test('phase7: proposals validate and persist without automatic promotion by defa
   await access(path.join(root, 'self-improvement.json'));
   const state = JSON.parse(await readFile(path.join(root, 'self-improvement.json'), 'utf8'));
   assert.equal(state.candidates.length, 1);
-  assert.equal(state.version, 2);
+  assert.equal(state.version, 3);
   await access(path.join(root, 'improvements', `${results[0].id}.md`));
 });
 
@@ -109,4 +109,33 @@ test('phase7: durable state survives engine recreation', async () => {
   assert.equal(second.getStatus().candidates, 1);
   assert.equal(second.getStatus().promoted, 0);
   assert.equal(results[0].status, 'validated');
+});
+
+test('phase8: promoted skills are measured on later goal reuse and rolled back on regression', async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), 'layra-si-'));
+  const memory = new MemoryStore(root);
+  const skills = new SkillStore(root);
+  const engine = new SelfImprovementEngine({ stateDir: root, memoryStore: memory, skillStore: skills, model: null, apply: true });
+
+  const promoted = await engine.observe({ goal: 'verify artifact', success: true, evidence: evidence(), lessons: [], failures: [], skillsUsed: ['learned-existing'] });
+  const candidate = promoted.find(item => item.kind === 'skill');
+  assert.ok(candidate);
+  assert.equal(candidate.status, 'promoted');
+  assert.equal(candidate.sourceGoal, 'verify artifact');
+  assert.ok(candidate.targetSkill);
+  const skillName = candidate.targetSkill;
+  assert.ok(await skills.read(skillName));
+
+  const successEval = await engine.evaluateGoalOutcome('verify artifact', true, evidence(), [skillName], Date.now() + 1000);
+  assert.deepEqual(successEval.evaluated, [candidate.id]);
+  assert.deepEqual(successEval.improved, [candidate.id]);
+  assert.equal(engine.getStatus().successfulReuse, 1);
+  assert.equal(engine.getStatus().regressions, 0);
+
+  const failureEval = await engine.evaluateGoalOutcome('verify artifact', false, evidence().map(item => ({ ...item, success: false })), [skillName], Date.now() + 2000);
+  assert.deepEqual(failureEval.regressed, [candidate.id]);
+  assert.equal(engine.getStatus().regressions, 1);
+  assert.equal(engine.getStatus().rolledBack, 1);
+  assert.equal((await skills.read(skillName)), null);
+  assert.equal(engine.getStatus().activePromoted, 0);
 });
