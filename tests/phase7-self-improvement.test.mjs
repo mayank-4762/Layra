@@ -33,6 +33,7 @@ test('phase7: proposals validate and persist without automatic promotion by defa
   await access(path.join(root, 'self-improvement.json'));
   const state = JSON.parse(await readFile(path.join(root, 'self-improvement.json'), 'utf8'));
   assert.equal(state.candidates.length, 1);
+  assert.equal(state.version, 2);
   await access(path.join(root, 'improvements', `${results[0].id}.md`));
 });
 
@@ -62,7 +63,9 @@ test('phase7: skill promotion versions and restores the exact prior skill', asyn
   const root = await mkdtemp(path.join(os.tmpdir(), 'layra-si-'));
   const memory = new MemoryStore(root);
   const skills = new SkillStore(root);
-  await skills.upsert('learned-demo', '# Old procedure\n\n## Verification\nOld check.', { description: 'Old procedure', version: '0.1.2', trusted: false });
+  const original = '---\nname: learned-demo\ndescription: Old procedure\nversion: 0.1.2\ntrusted: false\n---\n\n# Old procedure\n\n## Verification\nOld check.\n';
+  await skills.upsert('learned-demo', original, { description: 'Old procedure', version: '0.1.2', trusted: false });
+  const before = (await skills.read('learned-demo')).content;
   const engine = new SelfImprovementEngine({ stateDir: root, memoryStore: memory, skillStore: skills, apply: false, model: null });
   const candidate = (await engine.observe({ goal: 'demo', success: true, evidence: evidence(), skillsUsed: ['learned-demo'] })).find(item => item.kind === 'skill');
   assert.ok(candidate);
@@ -76,12 +79,11 @@ test('phase7: skill promotion versions and restores the exact prior skill', asyn
   assert.equal(await engine.rollback(candidate.id, 'Regression detected'), true);
   const restored = await skills.read('learned-demo');
   assert.ok(restored);
-  assert.match(restored.content, /Old procedure/);
-  assert.match(restored.content, /version: 0\.1\.3|version: 0\.1\.4/);
+  assert.equal(restored.content, before);
   await access(path.join(root, 'improvement-backups', `${candidate.id}.md`));
 });
 
-test('phase7: duplicate learned skills are archived, not deleted', async () => {
+test('phase7: duplicate learned skills are archived from the active catalog', async () => {
   const root = await mkdtemp(path.join(os.tmpdir(), 'layra-si-'));
   const memory = new MemoryStore(root);
   const skills = new SkillStore(root);
@@ -92,6 +94,8 @@ test('phase7: duplicate learned skills are archived, not deleted', async () => {
   assert.equal(result.inspected, 2);
   assert.equal(result.duplicates, 1);
   assert.equal(result.archived, 1);
+  const remaining = await skills.list();
+  assert.equal(remaining.filter(item => item.name === 'learned-two').length, 0);
   const archiveRoot = path.join(root, 'improvement-backups', 'archive');
   await access(archiveRoot);
 });
