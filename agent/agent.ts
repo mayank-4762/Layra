@@ -69,6 +69,12 @@ export class HybridAgent {
     this.running = true;
     await this.memoryStore.load();
     await this.selfImprovement.load();
+    try {
+      const curator = await this.selfImprovement.curate();
+      await this.sessionStore.event('self_improvement_curated', 'Completed learned-skill maintenance pass.', curator);
+    } catch (error) {
+      this.state.shortTermMemory.selfImprovementCuratorError = error instanceof Error ? error.message : String(error);
+    }
     await this.sessionStore.initialize(this.state);
     const durable = await this.memoryStore.recent(100);
     this.state.longTermMemory.records = durable;
