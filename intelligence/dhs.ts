@@ -80,18 +80,21 @@ export class DHSIntelligence {
   }
 
   async verifyGoal(goal: string, evidence: any[]): Promise<{ achieved: boolean; confidence: number; reason: string; nextAction?: string }> {
-    const usableEvidence = evidence.filter(item => item && item.status === 'completed');
-    const hasErrors = evidence.some(item => item?.error);
-    const fallback = {
-      achieved: evidence.length > 0 && evidence.every(item => item?.status === 'completed') && !hasErrors,
-      confidence: evidence.length > 0 && !hasErrors ? 0.55 : 0,
-      reason: evidence.length > 0 && !hasErrors ? 'All planned steps completed without execution errors; DHS verification was unavailable at this moment.' : 'Execution evidence does not establish successful completion.',
-      nextAction: evidence.length > 0 && !hasErrors ? undefined : 'Generate a revised plan from the latest failure evidence.'
+    const validEvidence = evidence.filter(item => item && item.status === 'completed' && !item.error);
+    if (!this.canCall()) return {
+      achieved: false,
+      confidence: 0,
+      reason: 'Independent DHS verification is unavailable; successful task execution alone is not sufficient evidence of goal completion.',
+      nextAction: 'Retry goal verification when DeepSeek is available, or gather direct goal-specific evidence.'
     };
-    if (!this.canCall()) return fallback;
 
-    const result: any = await this.analyzeJson(`Act as Layra's independent goal verifier. Goal: ${goal}\nExecution evidence:\n${JSON.stringify(evidence.slice(-12))}\nRequire direct evidence of the stated goal, not task count. You may mark achieved only when the evidence supports the actual goal. Return exactly JSON: {"achieved":true|false,"confidence":0-1,"reason":"...","nextAction":"..."}.`, 900);
-    if (!result) return fallback;
+    const result: any = await this.analyzeJson(`Act as Layra's independent goal verifier. Goal: ${goal}\nExecution evidence:\n${JSON.stringify(evidence.slice(-12))}\nCompleted evidence records: ${JSON.stringify(validEvidence.slice(-12))}\nRequire direct evidence of the stated goal, not task count or execution success alone. You may mark achieved only when the supplied evidence supports the actual goal. Return exactly JSON: {"achieved":true|false,"confidence":0-1,"reason":"...","nextAction":"..."}.`, 900);
+    if (!result) return {
+      achieved: false,
+      confidence: 0,
+      reason: 'DHS verification failed; the runtime will not infer goal completion from task completion.',
+      nextAction: 'Retry verification from the persisted evidence.'
+    };
     return {
       achieved: Boolean(result.achieved),
       confidence: Math.max(0, Math.min(1, Number(result.confidence ?? 0))),
