@@ -67,6 +67,8 @@ export interface PlanStep {
   riskLevel: 'low' | 'medium' | 'high';
   verificationRequired: boolean;
   expectedOutcome: string;
+  /** Explicit skill procedures this step is intended to follow. */
+  skillRefs?: string[];
 }
 
 export enum PlanStepStatus {
