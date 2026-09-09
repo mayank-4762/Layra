@@ -8,6 +8,7 @@ import { LayraSessionStore } from './layra-session';
 import { createModelClient, getModelConfig } from '../config/model-provider';
 import { MemoryStore } from '../core/memory';
 import { SkillStore } from '../core/skills';
+import { SelfImprovementEngine } from './self-improvement';
 import { ChatMessage } from '../config/model-provider';
 import { runToolLoop, ToolLoopResult } from './tool-loop';
 
@@ -22,6 +23,7 @@ export class HybridAgent {
   private readonly sessionStore: LayraSessionStore;
   private readonly memoryStore: MemoryStore;
   private readonly skillStore: SkillStore;
+  private readonly selfImprovement: SelfImprovementEngine;
   private readonly maxTasksPerRun: number;
   private readonly maxReplansPerGoal: number;
   private running = false;
@@ -42,6 +44,7 @@ export class HybridAgent {
     this.dhsIntelligence = new DHSIntelligence(this.state, this.toolExecutor);
     this.memoryStore = new MemoryStore();
     this.skillStore = new SkillStore();
+    this.selfImprovement = new SelfImprovementEngine({ memoryStore: this.memoryStore, skillStore: this.skillStore });
     this.sessionStore = new LayraSessionStore({ maxTasksPerRun: this.maxTasksPerRun });
     this.toolRegistry.registerHook({
       after: async (tool, _parameters, result) => {
@@ -65,6 +68,7 @@ export class HybridAgent {
     if (this.running) return;
     this.running = true;
     await this.memoryStore.load();
+    await this.selfImprovement.load();
     await this.sessionStore.initialize(this.state);
     const durable = await this.memoryStore.recent(100);
     this.state.longTermMemory.records = durable;
@@ -114,6 +118,7 @@ export class HybridAgent {
     this.state.taskQueue = [];
   }
   getState(): AgentState { return this.state; }
+  getSelfImprovementStatus() { return this.selfImprovement.getStatus(); }
   getStatistics() {
     const model = getModelConfig();
     return {
@@ -123,7 +128,7 @@ export class HybridAgent {
       failedTasks: this.state.failedTasks.length, pendingTasks: this.state.currentPlan.filter(step => step.status === PlanStepStatus.PENDING).length,
       sessionId: this.sessionStore.getSessionId(), runNumber: this.sessionStore.getRunNumber(), maxActionsPerRun: this.maxTasksPerRun,
       maxReplansPerGoal: this.maxReplansPerGoal, replansThisGoal: this.replansThisGoal,
-      availableTools: this.state.availableTools.map(tool => tool.name)
+      availableTools: this.state.availableTools.map(tool => tool.name), selfImprovement: this.selfImprovement.getStatus()
     };
   }
 
@@ -247,7 +252,7 @@ export class HybridAgent {
     const steps = this.state.completedTasks.slice(-8).map((task: Task, i: number) => `${i + 1}. ${task.description} (tool: ${task.assignedTo || 'n/a'})`).join('\n');
     const lessons = (this.state.longTermMemory.lessons || []).slice(-5).map((item: any) => `- ${String(item)}`).join('\n');
     try {
-      await this.skillStore.upsert(name, `# Procedure\n\n${steps}\n\n# Lessons\n\n${lessons || '- No durable lesson recorded.'}`, { description: 'Reusable workflow learned by Layra from successful execution.', tools: this.state.completedTasks.slice(-8).map(t => t.assignedTo || '').filter(Boolean) });
+      await this.skillStore.upsert(name, `# Procedure\n\n${steps}\n\n## Verification\nConfirm the goal-specific result from fresh evidence; do not infer success from step completion alone.\n\n# Lessons\n\n${lessons || '- No durable lesson recorded.'}`, { description: 'Reusable workflow learned by Layra.', tools: this.state.completedTasks.slice(-8).map(t => t.assignedTo || '').filter(Boolean) });
       await this.sessionStore.event('skill_learned', `Saved procedural skill ${name}`, { name });
     } catch (error) { this.state.shortTermMemory.skillLearningError = error instanceof Error ? error.message : String(error); }
   }
@@ -258,10 +263,18 @@ export class HybridAgent {
     const evidence = this.state.currentPlan.map(step => ({ id: step.id, description: step.description, expectedOutcome: step.expectedOutcome, status: step.status, result: this.safeEvidence(step.result), error: step.error }));
     const verification = await this.dhsIntelligence.verifyGoal(goal, evidence);
     this.state.shortTermMemory.goalVerification = verification;
-    if (!verification.achieved) { await this.requestReplan(`Goal verification rejected completion: ${verification.reason}${verification.nextAction ? ` Next: ${verification.nextAction}` : ''}`); return true; }
+    const lessons = (this.state.longTermMemory.lessons || []).slice(-10).map((item: any) => typeof item === 'string' ? item : String(item?.content || '')).filter(Boolean);
+    const failures = this.state.failedTasks.slice(-10).map(task => String(task.error || task.description)).filter(Boolean);
+    const improvementEvidence = evidence.map(item => ({ id: item.id, type: 'goal-step', summary: `${item.description}: ${item.expectedOutcome || 'completed'}`, success: item.status === PlanStepStatus.COMPLETED && !item.error }));
+    if (!verification.achieved) {
+      await this.selfImprovement.observe({ goal, success: false, evidence: improvementEvidence, failures: [verification.reason, verification.nextAction || '', ...failures].filter(Boolean), lessons, skillsUsed: [] }).catch(error => { this.state.shortTermMemory.selfImprovementError = error instanceof Error ? error.message : String(error); });
+      await this.requestReplan(`Goal verification rejected completion: ${verification.reason}${verification.nextAction ? ` Next: ${verification.nextAction}` : ''}`);
+      return true;
+    }
     this.state.goalHistory.push(goal);
     await this.dhsIntelligence.generateGoalInsights(true, goal);
     await this.memoryStore.remember({ kind: 'event', content: `Verified goal completed: ${goal}`, tags: ['goal', 'verified'], importance: 9, source: 'DHS' });
+    await this.selfImprovement.observe({ goal, success: true, evidence: improvementEvidence, failures, lessons, skillsUsed: [] }).catch(error => { this.state.shortTermMemory.selfImprovementError = error instanceof Error ? error.message : String(error); });
     this.state.currentGoal = null;
     this.state.currentPlan = [];
     this.tasksThisRun = 0;
