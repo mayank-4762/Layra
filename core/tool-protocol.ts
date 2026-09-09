@@ -20,7 +20,7 @@ export interface ModelToolTurn {
   raw: any;
 }
 
-/** Map Layra's dotted internal tool names to OpenAI/NVIDIA-compatible names. */
+/** Map Layra's dotted internal tool names to provider-safe function names. */
 export function toProviderToolName(name: string): string {
   return String(name || '').trim().replace(/[^a-zA-Z0-9_-]/g, '_');
 }
@@ -29,8 +29,9 @@ export function toInternalToolName(name: string, tools: Tool[]): string {
   const candidate = String(name || '').trim();
   const exact = tools.find(tool => tool.name === candidate);
   if (exact) return exact.name;
-  const match = tools.find(tool => toProviderToolName(tool.name) === candidate);
-  return match?.name || candidate;
+  const matches = tools.filter(tool => toProviderToolName(tool.name) === candidate);
+  if (matches.length === 1) return matches[0].name;
+  return candidate;
 }
 
 export function normalizeToolCalls(raw: any, tools: Tool[] = []): ToolCall[] {
@@ -46,9 +47,7 @@ export function normalizeToolCalls(raw: any, tools: Tool[] = []): ToolCall[] {
       try {
         const parsed = JSON.parse(source);
         if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) args = parsed;
-      } catch {
-        args = {};
-      }
+      } catch { args = {}; }
     } else if (source && typeof source === 'object' && !Array.isArray(source)) {
       args = source;
     }
@@ -73,11 +72,8 @@ export function toOpenAICompatibleTools(tools: Tool[]): any[] {
 
 export function normalizeToolResult(value: any, maxChars = 12000): string {
   let text: string;
-  try {
-    text = typeof value === 'string' ? value : JSON.stringify(value);
-  } catch {
-    text = String(value);
-  }
+  try { text = typeof value === 'string' ? value : JSON.stringify(value); }
+  catch { text = String(value); }
   return text.length > maxChars ? `${text.slice(0, maxChars)}\n[tool result truncated]` : text;
 }
 
