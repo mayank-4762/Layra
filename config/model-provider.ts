@@ -26,6 +26,7 @@ export interface ModelToolOptions {
   maxTokens?: number;
   tools?: Tool[];
   toolChoice?: 'auto' | 'none' | 'required';
+  signal?: AbortSignal;
 }
 
 export interface ModelClient {
@@ -72,7 +73,8 @@ export function createModelClient(apiKey?: string): ModelClient | null {
     const response = await fetch(config.apiEndpoint, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${key}` },
-      body: JSON.stringify(body)
+      body: JSON.stringify(body),
+      signal: options.signal
     });
     const text = await response.text();
     let raw: any;
