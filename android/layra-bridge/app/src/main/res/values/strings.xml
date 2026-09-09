@@ -1,0 +1,5 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">Layra Android Bridge</string>
+    <string name="accessibility_service_description">Allows Layra to inspect and control Android UI after the user explicitly enables the service.</string>
+</resources>
