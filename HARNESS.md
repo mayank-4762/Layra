@@ -1,70 +1,42 @@
-# Hybrid Agent Harness — OpenClaw + Hermes + DeepSeek
+# Layra Runtime
 
-## Architecture
+Layra is one unified agent. Hermes is its reasoning/planning capability, NVIDIA provides the primary inference/reasoning model, OpenClaw is the action/execution capability, and DHS is the DeepSeek-powered analysis/learning capability.
 
-```
-User Input → OpenClaw (Hand/Executor)
-                  ↓
-           Hermes (Brain/Reasoner) — plans, breaks goals into steps
-                  ↓
-           DeepSeek (Nervous System) — heavy analysis, pattern detection
-                  ↓
-           OpenClaw executes tools, writes memory
-                  ↓
-           State flows back to Hermes for next iteration
-```
+The production runtime is `main.ts` → `HybridAgent`.
 
-## Dispatch Protocol
+## Runtime loop
 
-### Tier 1 — Fast exec (OpenClaw handles alone)
-- File reads, writes, simple commands
-- Short factual lookups
-- Telegram replies
+1. Restore persistent state.
+2. Select or accept a goal.
+3. Ask Hermes for a bounded executable plan using only registered capabilities.
+4. Validate dependencies, permissions and tool availability.
+5. Execute the next action through the ToolExecutor/OpenClaw policy boundary.
+6. Feed the observed result to NVIDIA for reasoning about continuation/replanning.
+7. Use DHS periodically for pattern analysis and reusable lessons.
+8. Verify the actual goal using evidence rather than task-count heuristics.
+9. Persist state, events, status and report.
+10. Resume from that state on the next process/session.
 
-### Tier 2 — Planning needed (OpenClaw + Hermes reasoning)
-- Multi-step goals
-- Complex decisions
-- Unknown scope
+## Safety
 
-### Tier 3 — Heavy analysis (DeepSeek harness invoked)
-- Pattern detection across memory/history
-- Strategic planning
-- Complex comparisons
-- Self-improvement suggestions
+Shell execution, file writes and web POST operations are opt-in through environment variables. File reads/lists are restricted to `LAYRA_WORKSPACE_ROOT`. Secrets are never stored in the repository.
 
-## Harness State (memory/harness-state.json)
+## Environment
 
-```json
-{
-  "current_goal": "...",
-  "steps": [],
-  "completed": [],
-  "blocked": [],
-  "insights": [],
-  "deepseek_calls": 0
-}
-```
+Required for full capability operation:
 
-## How it works
+- `NVIDIA_API_KEY`
+- `DEEPSEEK_API_KEY`
+- An installed `hermes` CLI
+- A reachable OpenClaw Gateway (`OPENCLAW_GATEWAY_URL`, plus token/password when configured)
 
-1. **User input** arrives via OpenClaw (Telegram/CLI)
-2. **Hermes** (this agent) plans the approach, breaks into steps
-3. **OpenClaw** executes steps using tools
-4. **DeepSeek** called for Tier-3 heavy analysis (via session_send to DeepSeek subagent)
-5. Results flow back, Hermes updates plan, repeat until done
-6. Final output stored in memory/ for next session
+Optional controls:
 
-## DeepSeek Subagent Config
+- `LAYRA_WORKSPACE_ROOT`
+- `LAYRA_ALLOW_SHELL=true`
+- `LAYRA_ALLOW_WRITE=true`
+- `LAYRA_ALLOW_WEB_POST=true`
+- `LAYRA_DHS_MAX_CALLS`
+- `LAYRA_DHS_MIN_INTERVAL_MS`
 
-- Session label: `deepseek-harness`
-- Runtime: isolated
-- System prompt: `agents/hybrid/DEEPSEEK_PROMPT.md`
-- Output: writes to `memory/deepseek-output.json`
-
-## Rules
-
-1. Never block the user — use fast paths when possible
-2. DeepSeek calls = max 3 per session (cost control)
-3. Store every significant decision in memory/
-4. Improve plan based on what worked last time
-5. Fail fast, recover faster
+Start with `npm run build && npm start`, optionally passing a goal as CLI text or `LAYRA_GOAL`.
