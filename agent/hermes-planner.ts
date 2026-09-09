@@ -24,9 +24,13 @@ export class HermesPlanner extends BasePlanner {
   async plan(goal: string, context: Record<string, any> = {}): Promise<PlannerResult> {
     await this.memory.load();
     const client = createModelClient();
-    if (!client) return this.fallback.plan(goal, context);
+    if (!client) {
+      this.state.shortTermMemory.relevantSkillsForGoal = [];
+      return this.fallback.plan(goal, context);
+    }
     const memories = await this.memory.search(goal, 8);
     const skills = await this.skills.findRelevant(goal, 4);
+    this.state.shortTermMemory.relevantSkillsForGoal = skills.map(skill => skill.name).slice(0, 4);
     const toolCatalog = this.toolRegistry.getAvailableTools().map(tool => ({ name: tool.name, description: tool.description, parameters: tool.parameters, returns: tool.returns, risk: tool.permissions }));
     const prompt = { goal, availableTools: toolCatalog, relevantMemory: memories, relevantSkills: skills.map(skill => ({ name: skill.name, description: skill.description, content: skill.content.slice(0, 8000) })), state: { currentGoal: this.state.currentGoal, recentActions: this.state.executionHistory.slice(-8), recentReflections: this.state.reflections.slice(-8), previousPlans: this.state.planningHistory.slice(-3) }, context };
     try {
@@ -36,6 +40,7 @@ export class HermesPlanner extends BasePlanner {
           'Plan real work, not a conversation. Select only tools from availableTools.',
           `Return at most ${this.options.maxSteps} steps. IDs must be unique and dependencies must reference valid step IDs.`,
           'Prefer the smallest useful sequence; independent read-only work may run in parallel.',
+          'Use relevant skills as prior procedural evidence when applicable; do not claim a skill was executed unless the planned work actually follows its procedure.',
           'Every step needs an explicit expectedOutcome and verificationRequired=true for consequential work.',
           'Do not claim that an action has already happened.',
           'Return ONLY JSON matching the requested plan schema.'
