@@ -97,7 +97,7 @@ export class HybridAgent {
       { role: 'system', content: 'You are Layra, one unified autonomous agent. Use tools when evidence or action is required. Never claim a tool action succeeded unless the tool result says success.' },
       { role: 'user', content: text }
     ];
-    const result = await runToolLoop(messages, this.toolRegistry, this.toolExecutor, { signal, maxRounds: Number(process.env.LAYRA_MAX_TOOL_ROUNDS || 8), maxToolCallsPerRound: Number(process.env.LAYRA_MAX_TOOL_CALLS_PER_ROUND || 8) });
+    const result = await runToolLoop(messages, this.toolRegistry, this.toolExecutor, { signal, maxRounds: Number(process.env.LAYRA_MAX_TOOL_ROUNDS || 16), maxToolCallsPerRound: Number(process.env.LAYRA_MAX_TOOL_CALLS_PER_ROUND || 8) });
     this.state.shortTermMemory.lastInteractiveTurn = { prompt: text, content: result.content, rounds: result.rounds, toolCalls: result.toolCalls, stoppedReason: result.stoppedReason, timestamp: new Date().toISOString() };
     await this.sessionStore.event('interactive_turn', result.content || result.stoppedReason, { rounds: result.rounds, toolCalls: result.toolCalls });
     return result;
