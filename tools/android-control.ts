@@ -27,7 +27,7 @@ export class AndroidControlBridge {
     catch { return false; }
   }
 
-  async health(signal?: AbortSignal): Promise<any> { return this.request('GET', '/health', undefined, signal, false); }
+  async health(signal?: AbortSignal): Promise<any> { return this.request('GET', '/health', undefined, signal); }
   async tree(signal?: AbortSignal): Promise<AndroidUiNode[]> { const result = await this.request<{ nodes?: AndroidUiNode[] }>('GET', '/tree', undefined, signal); return Array.isArray(result?.nodes) ? result.nodes : []; }
   async tap(selector: Record<string, any>, signal?: AbortSignal): Promise<any> { return this.request('POST', '/tap', { selector }, signal); }
   async type(selector: Record<string, any>, text: string, signal?: AbortSignal): Promise<any> { return this.request('POST', '/type', { selector, text: String(text).slice(0, 10000) }, signal); }
