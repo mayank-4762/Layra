@@ -46,6 +46,29 @@ test('interactive tool loop emits explicit provider-safe results for calls over 
   assert.match(result.messages.at(-1).content, /budget exceeded/);
 });
 
+test('interactive tool loop supports long multi-step goals beyond the old 8-round ceiling', async () => {
+  const { runToolLoop } = await import('../dist/agent/tool-loop.js');
+  let turn = 0;
+  const client = {
+    async chatWithTools() {
+      turn += 1;
+      if (turn <= 10) return {
+        content: '',
+        toolCalls: [{ id: `step_${turn}`, name: 'system.time', arguments: {} }],
+        raw: { choices: [{ message: { content: '', tool_calls: [{ id: `step_${turn}`, type: 'function', function: { name: 'system_time', arguments: '{}' } }] } }] }
+      };
+      return { content: 'Long multi-step goal completed.', toolCalls: [], raw: { choices: [{ message: { content: 'Long multi-step goal completed.' } }] } };
+    }
+  };
+  const registry = { getAvailableTools: () => [{ name: 'system.time', description: 'time', parameters: {}, returns: 'string', permissions: ['system.time'], isAvailable: true }] };
+  const executor = { async execute() { return { success: true, result: 'ok', error: null, executionTime: 1 }; } };
+  const result = await runToolLoop([{ role: 'user', content: 'Complete a long multi-step workflow' }], registry, executor, { client, maxRounds: 12, maxToolCallsPerRound: 1 });
+  assert.equal(result.stoppedReason, 'completed');
+  assert.equal(result.rounds, 11);
+  assert.equal(result.toolCalls, 10);
+  assert.match(result.content, /Long multi-step goal completed/);
+});
+
 test('interactive tool loop honors an already-aborted signal without calling the model', async () => {
   const { runToolLoop } = await import('../dist/agent/tool-loop.js');
   const controller = new AbortController();
