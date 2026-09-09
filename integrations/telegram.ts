@@ -24,7 +24,7 @@ export interface TelegramGatewayOptions {
 
 export class TelegramGateway {
   private readonly token: string;
-  private readonly allowedUserIds: Set<number> | null;
+  private readonly allowedUserIds: Set<number>;
   private readonly pollIntervalMs: number;
   private readonly requestTimeoutMs: number;
   private offset = 0;
@@ -33,14 +33,13 @@ export class TelegramGateway {
 
   constructor(private readonly agent: HybridAgent, options: TelegramGatewayOptions = {}) {
     this.token = options.botToken || process.env.LAYRA_TELEGRAM_BOT_TOKEN || '';
-    const configured = options.allowedUserIds || parseAllowedUsers(process.env.LAYRA_TELEGRAM_ALLOWED_USER_IDS);
-    this.allowedUserIds = configured.size > 0 ? configured : null;
+    this.allowedUserIds = options.allowedUserIds || parseAllowedUsers(process.env.LAYRA_TELEGRAM_ALLOWED_USER_IDS);
     this.pollIntervalMs = positiveInt(options.pollIntervalMs ?? Number(process.env.LAYRA_TELEGRAM_POLL_INTERVAL_MS), 1000);
     this.requestTimeoutMs = positiveInt(options.requestTimeoutMs ?? Number(process.env.LAYRA_TELEGRAM_REQUEST_TIMEOUT_MS), 30000);
   }
 
   isConfigured(): boolean {
-    return this.token.length > 0;
+    return this.token.length > 0 && this.allowedUserIds.size > 0;
   }
 
   async start(): Promise<void> {
@@ -94,16 +93,20 @@ export class TelegramGateway {
     }
 
     await this.sendMessage(chatId, 'Working...');
-    const result = await this.agent.runInteractiveTurn(text);
-    if (result.stoppedReason === 'no_model') {
-      await this.sendMessage(chatId, 'Layra has no model API key configured.');
-      return;
+    try {
+      const result = await this.agent.runInteractiveTurn(text);
+      if (result.stoppedReason === 'no_model') {
+        await this.sendMessage(chatId, 'Layra has no model API key configured.');
+        return;
+      }
+      await this.sendMessage(chatId, result.content || `[stopped: ${result.stoppedReason}; rounds=${result.rounds}; toolCalls=${result.toolCalls}]`);
+    } catch (error) {
+      await this.sendMessage(chatId, `Layra error: ${error instanceof Error ? error.message : String(error)}`);
     }
-    await this.sendMessage(chatId, result.content || `[stopped: ${result.stoppedReason}; rounds=${result.rounds}; toolCalls=${result.toolCalls}]`);
   }
 
   private isAllowed(userId: number): boolean {
-    return this.allowedUserIds === null || this.allowedUserIds.has(userId);
+    return this.allowedUserIds.has(userId);
   }
 
   private async getUpdates(): Promise<TelegramUpdate[]> {
