@@ -23,10 +23,11 @@ export async function runToolLoop(initialMessages: ChatMessage[], registry: Tool
       maxChars: Math.max(8000, Number(process.env.LAYRA_MAX_CONTEXT_CHARS || 60000))
     });
 
+    const availableTools = registry.getAvailableTools();
     let turn;
     try {
       turn = await client.chatWithTools(messages, {
-        tools: registry.getAvailableTools(),
+        tools: availableTools,
         toolChoice: 'auto',
         temperature: 0.2,
         maxTokens: 1600,
@@ -37,7 +38,7 @@ export async function runToolLoop(initialMessages: ChatMessage[], registry: Tool
       return { content: `Model error: ${error instanceof Error ? error.message : String(error)}`, rounds: round, toolCalls: totalCalls, stoppedReason: 'tool_error', messages };
     }
 
-    const normalized = extractModelTurn(turn.raw);
+    const normalized = extractModelTurn(turn.raw, availableTools);
     const rawToolCalls = turn.raw?.choices?.[0]?.message?.tool_calls;
     messages.push({ role: 'assistant', content: normalized.content, ...(Array.isArray(rawToolCalls) && rawToolCalls.length ? { tool_calls: rawToolCalls } : {}) });
     if (!normalized.toolCalls.length) return { content: normalized.content, rounds: round, toolCalls: totalCalls, stoppedReason: 'completed', messages };
