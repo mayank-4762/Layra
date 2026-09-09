@@ -4,6 +4,7 @@ import { BasePlanner, PlannerResult, PlannedStep, SimplePlanner } from './planne
 import { createModelClient } from '../config/model-provider';
 import { MemoryStore } from '../core/memory';
 import { SkillStore } from '../core/skills';
+import { normalizeSkillRefs } from './skill-attribution';
 
 /**
  * Integrated Hermes-derived reasoning/planning capability.
@@ -30,7 +31,9 @@ export class HermesPlanner extends BasePlanner {
     }
     const memories = await this.memory.search(goal, 8);
     const skills = await this.skills.findRelevant(goal, 4);
+    const allowedSkillRefs = new Set(skills.map(skill => skill.name));
     this.state.shortTermMemory.relevantSkillsForGoal = skills.map(skill => skill.name).slice(0, 4);
+    this.state.shortTermMemory.skillExecutionEvidence = [];
     const toolCatalog = this.toolRegistry.getAvailableTools().map(tool => ({ name: tool.name, description: tool.description, parameters: tool.parameters, returns: tool.returns, risk: tool.permissions }));
     const prompt = { goal, availableTools: toolCatalog, relevantMemory: memories, relevantSkills: skills.map(skill => ({ name: skill.name, description: skill.description, content: skill.content.slice(0, 8000) })), state: { currentGoal: this.state.currentGoal, recentActions: this.state.executionHistory.slice(-8), recentReflections: this.state.reflections.slice(-8), previousPlans: this.state.planningHistory.slice(-3) }, context };
     try {
@@ -40,7 +43,8 @@ export class HermesPlanner extends BasePlanner {
           'Plan real work, not a conversation. Select only tools from availableTools.',
           `Return at most ${this.options.maxSteps} steps. IDs must be unique and dependencies must reference valid step IDs.`,
           'Prefer the smallest useful sequence; independent read-only work may run in parallel.',
-          'Use relevant skills as prior procedural evidence when applicable; do not claim a skill was executed unless the planned work actually follows its procedure.',
+          'Each step may include skillRefs: an array naming only relevantSkills that this step will intentionally follow. Do not add a skillRef merely because a skill is relevant elsewhere in the goal.',
+          'A skill reference is an execution attribution: Layra records it only after this step receives a real tool result.',
           'Every step needs an explicit expectedOutcome and verificationRequired=true for consequential work.',
           'Do not claim that an action has already happened.',
           'Return ONLY JSON matching the requested plan schema.'
@@ -48,7 +52,7 @@ export class HermesPlanner extends BasePlanner {
         { role: 'user', content: JSON.stringify(prompt) }
       ], { temperature: 0.15, maxTokens: 5000 });
       const parsed = this.parseJson(response.content);
-      const normalized: PlannerResult = { steps: Array.isArray(parsed?.steps) ? parsed.steps.map((step: any, index: number) => this.normalizeStep(step, index)).filter(Boolean) as PlannedStep[] : [], confidence: Math.max(0, Math.min(1, Number(parsed?.confidence ?? 0.5))), reasoning: String(parsed?.reasoning || 'Model-generated plan'), alternatives: [] };
+      const normalized: PlannerResult = { steps: Array.isArray(parsed?.steps) ? parsed.steps.map((step: any, index: number) => this.normalizeStep(step, index, allowedSkillRefs)).filter(Boolean) as PlannedStep[] : [], confidence: Math.max(0, Math.min(1, Number(parsed?.confidence ?? 0.5))), reasoning: String(parsed?.reasoning || 'Model-generated plan'), alternatives: [] };
       const validation = this.validatePlan(normalized);
       if (!validation.isValid || !normalized.steps.length) return this.fallback.plan(goal, { ...context, planningError: validation.issues });
       return this.optimizePlan(normalized);
@@ -70,6 +74,8 @@ export class HermesPlanner extends BasePlanner {
       ids.add(step.id); byId.set(step.id, step);
       if (!this.toolRegistry.isToolAvailable(step.tool)) issues.push(`Unavailable tool: ${step.tool}`);
       if (!step.description || !step.expectedOutcome) issues.push(`Incomplete step: ${step.id}`);
+      if ((step.skillRefs || []).length > 4) issues.push(`Too many skill references for ${step.id}`);
+      if (new Set(step.skillRefs || []).size !== (step.skillRefs || []).length) issues.push(`Duplicate skill reference for ${step.id}`);
       for (const dep of step.dependsOn) {
         if (dep === step.id) issues.push(`Self dependency on ${step.id}`);
         if (!plan.steps.some(item => item.id === dep)) issues.push(`Missing dependency ${dep} for ${step.id}`);
@@ -111,10 +117,10 @@ export class HermesPlanner extends BasePlanner {
   estimateTotalDuration(plan: PlannerResult): number { return plan.steps.reduce((sum, step) => sum + Math.max(1, step.estimatedDuration), 0); }
   calculatePlanRisk(plan: PlannerResult): 'low' | 'medium' | 'high' { if (plan.steps.some(step => step.riskLevel === 'high')) return 'high'; if (plan.steps.some(step => step.riskLevel === 'medium')) return 'medium'; return 'low'; }
 
-  private normalizeStep(step: any, index: number): PlannedStep | null {
+  private normalizeStep(step: any, index: number, allowedSkillRefs: Set<string>): PlannedStep | null {
     if (!step || typeof step !== 'object' || typeof step.tool !== 'string') return null;
     const risk = step.riskLevel === 'high' || step.riskLevel === 'medium' ? step.riskLevel : 'low';
-    return { id: String(step.id || `plan_${Date.now()}_${index}`), description: String(step.description || `Execute ${step.tool}`), tool: step.tool, parameters: step.parameters && typeof step.parameters === 'object' ? step.parameters : {}, dependsOn: Array.isArray(step.dependsOn) ? step.dependsOn.map(String) : [], estimatedDuration: Math.max(1, Number(step.estimatedDuration || 5)), priority: Math.max(0, Number(step.priority || 1)), riskLevel: risk, verificationRequired: step.verificationRequired !== false, expectedOutcome: String(step.expectedOutcome || 'Successful tool execution') };
+    return { id: String(step.id || `plan_${Date.now()}_${index}`), description: String(step.description || `Execute ${step.tool}`), tool: step.tool, parameters: step.parameters && typeof step.parameters === 'object' ? step.parameters : {}, dependsOn: Array.isArray(step.dependsOn) ? step.dependsOn.map(String) : [], estimatedDuration: Math.max(1, Number(step.estimatedDuration || 5)), priority: Math.max(0, Number(step.priority || 1)), riskLevel: risk, verificationRequired: step.verificationRequired !== false, expectedOutcome: String(step.expectedOutcome || 'Successful tool execution'), skillRefs: normalizeSkillRefs(step.skillRefs, allowedSkillRefs) };
   }
 
   private parseJson(content: string): any { const candidate = content.match(/```(?:json)?\s*([\s\S]*?)\s*```/i)?.[1] || content; const start = candidate.indexOf('{'); const end = candidate.lastIndexOf('}'); if (start < 0 || end <= start) throw new Error('Planner returned no JSON object'); return JSON.parse(candidate.slice(start, end + 1)); }
