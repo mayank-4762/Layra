@@ -63,19 +63,22 @@ test('phase7: skill promotion versions and restores the exact prior skill', asyn
   const memory = new MemoryStore(root);
   const skills = new SkillStore(root);
   await skills.upsert('learned-demo', '# Old procedure\n\n## Verification\nOld check.', { description: 'Old procedure', version: '0.1.2', trusted: false });
-  const engine = new SelfImprovementEngine({ stateDir: root, memoryStore: memory, skillStore: skills, apply: true, model: null });
+  const engine = new SelfImprovementEngine({ stateDir: root, memoryStore: memory, skillStore: skills, apply: false, model: null });
   const candidate = (await engine.observe({ goal: 'demo', success: true, evidence: evidence(), skillsUsed: ['learned-demo'] })).find(item => item.kind === 'skill');
   assert.ok(candidate);
-  const promoted = await engine.promote({ ...candidate, change: `name: learned-demo\n\n# New procedure\n\n## Verification\nNew check.` });
-  assert.equal(promoted, true);
+  candidate.change = 'name: learned-demo\n\n# New procedure\n\n## Verification\nNew check.';
+  assert.equal(await engine.promote(candidate), true);
   const current = await skills.read('learned-demo');
   assert.ok(current);
   assert.match(current.content, /New procedure/);
   assert.match(current.content, /version: 0\.1\.3/);
   assert.equal(engine.getStatus().promoted, 1);
-  assert.ok(await access(path.join(root, 'improvement-backups', `${candidate.id}.md`)) === undefined);
-  const stored = { ...(candidate as any), status: 'promoted', targetSkill: 'learned-demo', previousSkillContent: '# Old procedure\n\n## Verification\nOld check.' };
   assert.equal(await engine.rollback(candidate.id, 'Regression detected'), true);
+  const restored = await skills.read('learned-demo');
+  assert.ok(restored);
+  assert.match(restored.content, /Old procedure/);
+  assert.match(restored.content, /version: 0\.1\.3|version: 0\.1\.4/);
+  await access(path.join(root, 'improvement-backups', `${candidate.id}.md`));
 });
 
 test('phase7: duplicate learned skills are archived, not deleted', async () => {
@@ -89,7 +92,6 @@ test('phase7: duplicate learned skills are archived, not deleted', async () => {
   assert.equal(result.inspected, 2);
   assert.equal(result.duplicates, 1);
   assert.equal(result.archived, 1);
-  await access(path.join(root, '.state-does-not-exist')).catch(() => undefined);
   const archiveRoot = path.join(root, 'improvement-backups', 'archive');
   await access(archiveRoot);
 });
