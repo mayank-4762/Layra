@@ -47,10 +47,11 @@ export class ToolExecutor {
       case 'memory.set': { const content = String(parameters.content || '').trim(); if (!content) return this.fail(toolName, 'Memory content is required', startTime); const kind = ['fact','lesson','preference','procedure','event'].includes(String(parameters.kind)) ? String(parameters.kind) as any : 'fact'; const record = await this.memoryStore.remember({ kind, content, tags: Array.isArray(parameters.tags) ? parameters.tags.map(String).slice(0, 20) : [], importance: Math.max(0, Math.min(10, Number(parameters.importance ?? 5))), source: parameters.source ? String(parameters.source) : 'Layra' }); this.state.longTermMemory.lastRecord = record; return this.ok(record, startTime, { executor: 'layra-memory', persistent: true }); }
       case 'session.search': return this.ok(await searchSessionEvents(String(parameters.query || ''), Math.max(1, Number(parameters.limit || 20))), startTime, { executor: 'layra-session-search', persistent: true });
       case 'browser.navigate': return this.ok(await this.browser.navigate(String(parameters.url || ''), signal), startTime, { executor: 'chromium-cdp' });
+      case 'browser.tabs': return this.ok(await this.browser.listTabs(), startTime, { executor: 'chromium-cdp' });
+      case 'browser.select_tab': return this.ok(await this.browser.selectTab(String(parameters.idOrUrl || '')), startTime, { executor: 'chromium-cdp' });
       case 'browser.snapshot': return this.ok(await this.browser.snapshot(signal), startTime, { executor: 'chromium-cdp' });
       case 'browser.accessibility': return this.ok(await this.browser.accessibilitySnapshot(signal), startTime, { executor: 'chromium-cdp' });
       case 'browser.screenshot': return this.ok(await this.browser.screenshot(signal), startTime, { executor: 'chromium-cdp', binary: true });
-      case 'browser.tabs': return this.ok(await this.browser.listTabs(), startTime, { executor: 'chromium-cdp' });
       case 'browser.click': return this.ok(await this.browser.click(String(parameters.selector || ''), signal), startTime, { executor: 'chromium-cdp' });
       case 'browser.type': return this.ok(await this.browser.type(String(parameters.selector || ''), String(parameters.text || ''), signal), startTime, { executor: 'chromium-cdp' });
       case 'browser.key': return this.ok(await this.browser.pressKey(String(parameters.key || ''), signal), startTime, { executor: 'chromium-cdp' });
