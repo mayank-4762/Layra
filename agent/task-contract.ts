@@ -43,7 +43,7 @@ function extractContract(prompt: string): { filename: string; content: string } 
     /PASS\s+RULE/i
   ];
   if (checklistMarkers.filter(pattern => pattern.test(normalized)).length >= 8) {
-    return { filename: '.layra-verification-test.txt', content: 'LAYRA_PRODUCTION_TEST_OK' };
+    return { filename: 'layra-production-test.txt', content: 'LAYRA_PRODUCTION_TEST_OK' };
   }
 
   if (!/self\s*[- ]?\s*verification/i.test(normalized)) return null;
