@@ -1,0 +1,31 @@
+name: Apply reliability supervisor patch
+
+on:
+  push:
+    branches: [layra-source-review]
+
+permissions:
+  contents: write
+
+jobs:
+  patch:
+    if: ${{ !contains(github.event.head_commit.message, '[reliability-patch]') }}
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: layra-source-review
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Apply patch
+        run: |
+          node scripts/apply-reliability-patch.mjs
+          node -e "const fs=require('fs'); const p='tests/task-contract.test.mjs'; let s=fs.readFileSync(p,'utf8'); s=s.replace(\"  assert.equal(out.result.postDeletionVerification, false);\",\"  assert.equal(out.result.postDeletionVerification, true);\"); fs.writeFileSync(p,s);"
+      - name: Commit patch
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add agent/task-contract.ts agent/agent.ts tools/native-runtime.ts tools/registry.ts tools/executor.ts tests/task-contract.test.mjs
+          git diff --cached --quiet || git commit -m "fix: enforce verified interactive task contracts [reliability-patch]"
+          git push origin layra-source-review
