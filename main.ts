@@ -1,5 +1,4 @@
 import { createInterface } from 'readline';
-import './agent/causal-runtime';
 import { HybridAgent } from './agent/agent';
 import { Phase6ReliabilitySupervisor } from './agent/reliability';
 import { LayraScheduler } from './agent/scheduler';
@@ -173,7 +172,8 @@ async function main(): Promise<void> {
   const scheduler = startScheduler(agent);
   console.log(`Starting Layra${goal ? ` with goal: ${goal}` : ''}...`);
   const shutdown = () => { scheduler?.stop(); void supervisor.stop('signal'); agent.stop(); console.log('Layra stopped.'); };
-  process.once('SIGINT', shutdown); process.once('SIGTERM', shutdown);
+  process.once('SIGINT', shutdown);
+  process.once('SIGTERM', shutdown);
   try { await agent.start(goal || undefined); }
   catch (error) { console.error('Layra failed to start:', error instanceof Error ? error.message : String(error)); process.exitCode = 1; }
   finally { await supervisor.stop('agent_stopped'); scheduler?.stop(); }
