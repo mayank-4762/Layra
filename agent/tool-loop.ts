@@ -3,6 +3,7 @@ import { ToolExecutor } from '../tools/executor';
 import { ToolRegistry } from '../tools/registry';
 import { compressMessages } from '../core/context';
 import { normalizeToolResult, toProviderToolName } from '../core/tool-protocol';
+import { enforceVerificationContract } from './task-contract';
 
 export interface ToolLoopProgress {
   type: 'round_start' | 'model_complete' | 'tool_start' | 'tool_complete' | 'completed' | 'stopped';
@@ -26,13 +27,27 @@ export interface ToolLoopResult { content: string; rounds: number; toolCalls: nu
 /**
  * Provider-neutral model↔tool loop.
  *
- * The loop deliberately supports longer goals without making the budget unbounded:
- * a normal turn gets up to 16 model/tool rounds by default, with an absolute cap of 64.
+ * Deterministic verification contracts are preflighted before the model is called.
+ * This prevents a model from incorrectly treating an explicitly specified verification
+ * procedure as missing input. Ordinary tasks continue through the normal model/tool loop.
  */
 export async function runToolLoop(initialMessages: ChatMessage[], registry: ToolRegistry, executor: ToolExecutor, options: ToolLoopOptions = {}): Promise<ToolLoopResult> {
-  const client = options.client || createModelClient();
   const startedAt = Date.now();
   const emit = (progress: Omit<ToolLoopProgress, 'elapsedMs'>) => options.onProgress?.({ ...progress, elapsedMs: Date.now() - startedAt });
+  const promptText = initialMessages.filter(message => message.role === 'user').map(message => message.content).join('\n');
+  const preflight = await enforceVerificationContract(promptText, executor, null, { rounds: 0, toolCalls: 0 });
+  if (preflight) {
+    emit({ type: 'completed', round: preflight.result.rounds, totalToolCalls: preflight.result.toolCalls, message: preflight.content });
+    return {
+      content: preflight.content,
+      rounds: preflight.result.rounds,
+      toolCalls: preflight.result.toolCalls,
+      stoppedReason: preflight.result.passed ? 'completed' : 'tool_error',
+      messages: [...initialMessages, { role: 'assistant', content: preflight.content }]
+    };
+  }
+
+  const client = options.client || createModelClient();
   if (!client) {
     emit({ type: 'stopped', round: 0, totalToolCalls: 0, message: 'No model client is configured.' });
     return { content: '', rounds: 0, toolCalls: 0, stoppedReason: 'no_model', messages: [...initialMessages] };
