@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 
 test('tool loop preflights a recognized verification contract before calling the model', async () => {
   const { runToolLoop } = await import('../dist/agent/tool-loop.js');
+  const { enforceVerificationContract } = await import('../dist/agent/task-contract.js');
   let modelCalled = false;
   let filePresent = true;
   const executor = {
@@ -33,4 +34,9 @@ test('tool loop preflights a recognized verification contract before calling the
   assert.match(result.content, /entire test passed: PASS/);
   assert.equal(result.rounds, 1);
   assert.equal(result.toolCalls, 8);
+
+  const replay = await enforceVerificationContract(prompt, executor, null, { rounds: result.rounds, toolCalls: result.toolCalls });
+  assert.ok(replay);
+  assert.equal(replay.result.passed, true);
+  assert.equal(replay.result.toolCalls, 8);
 });
