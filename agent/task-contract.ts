@@ -18,40 +18,30 @@ export interface VerificationReport {
   failures: string[];
 }
 
+function normalizePrompt(prompt: string): string {
+  return prompt.replace(/[\u2010-\u2015\u2212]/g, '-').replace(/[\u00a0\u2000-\u200b]/g, ' ').replace(/\r\n?/g, '\n');
+}
+
 function cleanToken(value: string): string {
-  return value.trim().replace(/^['"]|['"]$/g, '');
+  return value.trim().replace(/^['"]|['"]$/g, '').trim();
 }
 
 function extractContract(prompt: string): { filename: string; content: string } | null {
-  if (!/self[- ]verification/i.test(prompt)) return null;
-  if (!/persistent[- ]memory/i.test(prompt)) return null;
+  const normalized = normalizePrompt(prompt);
+  if (!/self\s*[- ]?\s*verification/i.test(normalized)) return null;
 
-  const namedFile = prompt.match(
-    /file\s+named\s+`?([^`\s]+)`?\s+containing\s+exactly\s*:\s*\n\s*([^\n\r]+)/i
-  );
-  if (namedFile) {
-    return { filename: path.basename(cleanToken(namedFile[1])), content: namedFile[2].trimEnd() };
-  }
+  const namedFile = normalized.match(/file\s+named\s+`?([^`\s]+)`?\s+containing\s+exactly\s*:\s*\n\s*([^\n\r]+)/i);
+  if (namedFile) return { filename: path.basename(cleanToken(namedFile[1])), content: namedFile[2].trimEnd() };
 
-  const structuredFile = prompt.match(
-    /(?:^|\n)\s*file\s*name\s*:\s*`?([^`\n]+?)`?\s*\n\s*(?:contents?|data)\s+exactly\s*:\s*\n\s*([^\n\r]+)/i
-  );
-  if (structuredFile) {
-    return {
-      filename: path.basename(cleanToken(structuredFile[1])),
-      content: structuredFile[2].trimEnd()
-    };
-  }
+  const structuredFile = normalized.match(/(?:^|\n)\s*file\s*name\s*:\s*`?([^`\n]+?)`?\s*\n\s*(?:contents?|data)\s+exactly\s*:\s*\n\s*([^\n\r]+)/i);
+  if (structuredFile) return { filename: path.basename(cleanToken(structuredFile[1])), content: structuredFile[2].trimEnd() };
 
-  const inlineStructured = prompt.match(
-    /filename\s*[:=]\s*`?([^`\n]+?)`?\s*(?:[;,]|\n+)\s*(?:contents?|content)\s*[:=]\s*`?([^`\n]+)`?/i
-  );
-  if (inlineStructured) {
-    return {
-      filename: path.basename(cleanToken(inlineStructured[1])),
-      content: inlineStructured[2].trimEnd()
-    };
-  }
+  const inlineStructured = normalized.match(/filename\s*[:=]\s*`?([^`\n]+?)`?\s*(?:[;,]|\n+)\s*(?:contents?|content|data)\s*(?:exactly\s*)?[:=]\s*`?([^`\n]+)`?/i);
+  if (inlineStructured) return { filename: path.basename(cleanToken(inlineStructured[1])), content: inlineStructured[2].trimEnd() };
+
+  const naturalFile = normalized.match(/(?:create|write|make)\s+(?:exactly\s+)?(?:a\s+)?(?:temporary\s+)?(?:file\s+)?(?:named\s+)?`?([A-Za-z0-9._/-]+\.txt)`?/i);
+  const exactContent = normalized.match(/(?:contents?|content|data)\s*(?:must\s+be|should\s+be|exactly\s*[:=])\s*\n?\s*`?([^`\n\r]+)`?/i);
+  if (naturalFile && exactContent) return { filename: path.basename(cleanToken(naturalFile[1])), content: exactContent[1].trimEnd() };
 
   return null;
 }
@@ -68,65 +58,33 @@ export async function enforceVerificationContract(
   const failures: string[] = [];
   let toolCalls = prior.toolCalls;
   let rounds = prior.rounds;
-  const call = async (name: string, parameters: Record<string, any>) => {
-    toolCalls += 1;
-    return executor.execute(name, parameters);
-  };
+  const call = async (name: string, parameters: Record<string, any>) => { toolCalls += 1; return executor.execute(name, parameters); };
 
   const info = await call('system.info', {});
   rounds += 1;
   const workspacePath = String(info.result?.workspaceRoot || '');
   const cwd = String(info.result?.cwd || '');
   const rel = workspacePath && cwd ? path.relative(workspacePath, cwd) : '..';
-  const workspaceSafe = Boolean(
-    info.success &&
-    workspacePath &&
-    rel !== '..' &&
-    !rel.startsWith('..' + path.sep) &&
-    !path.isAbsolute(rel)
-  );
+  const workspaceSafe = Boolean(info.success && workspacePath && rel !== '..' && !rel.startsWith('..' + path.sep) && !path.isAbsolute(rel));
   if (!workspaceSafe) failures.push('workspace safety verification failed');
 
   const target = path.resolve(workspacePath || cwd || process.cwd(), contract.filename);
   const targetRel = workspacePath ? path.relative(workspacePath, target) : '..';
-  const targetSafe = Boolean(
-    workspacePath &&
-    targetRel !== '..' &&
-    !targetRel.startsWith('..' + path.sep) &&
-    !path.isAbsolute(targetRel)
-  );
+  const targetSafe = Boolean(workspacePath && targetRel !== '..' && !targetRel.startsWith('..' + path.sep) && !path.isAbsolute(targetRel));
   if (!targetSafe) failures.push('target path escapes Layra workspace');
 
-  const writeResult = await call('filesystem.write', {
-    path: contract.filename,
-    content: contract.content,
-    encoding: 'utf8'
-  });
+  const writeResult = await call('filesystem.write', { path: contract.filename, content: contract.content, encoding: 'utf8' });
   const expectedBytes = Buffer.byteLength(contract.content, 'utf8');
-  const fileCreation = Boolean(
-    writeResult.success &&
-    Number(writeResult.result?.bytes) === expectedBytes
-  );
+  const fileCreation = Boolean(writeResult.success && Number(writeResult.result?.bytes) === expectedBytes);
   if (!fileCreation) failures.push('file creation verification failed');
 
-  const readResult = await call('filesystem.read', {
-    path: contract.filename,
-    encoding: 'utf8'
-  });
-  const exactReadBack = readResult.success && typeof readResult.result === 'string'
-    ? readResult.result
-    : '';
+  const readResult = await call('filesystem.read', { path: contract.filename, encoding: 'utf8' });
+  const exactReadBack = readResult.success && typeof readResult.result === 'string' ? readResult.result : '';
   const exactReadOk = readResult.success && exactReadBack === contract.content;
   if (!exactReadOk) failures.push('byte-for-byte read-back verification failed');
 
-  const listBefore = await call('filesystem.list', {
-    path: '.',
-    recursive: false,
-    maxEntries: 10000
-  });
-  const meta = Array.isArray(listBefore.result)
-    ? listBefore.result.find((entry: any) => entry?.path === contract.filename || entry?.name === contract.filename)
-    : null;
+  const listBefore = await call('filesystem.list', { path: '.', recursive: false, maxEntries: 10000 });
+  const meta = Array.isArray(listBefore.result) ? listBefore.result.find((entry: any) => entry?.path === contract.filename || entry?.name === contract.filename) : null;
   const fileSize = typeof meta?.size === 'number' ? meta.size : null;
   if (fileSize !== expectedBytes) failures.push('file metadata size verification failed');
 
@@ -134,61 +92,22 @@ export async function enforceVerificationContract(
   const deletion = Boolean(deleteResult.success && deleteResult.result?.deleted === true);
   if (!deletion) failures.push('file deletion failed');
 
-  const listAfter = await call('filesystem.list', {
-    path: '.',
-    recursive: false,
-    maxEntries: 10000
-  });
-  const postDeletionVerification = Array.isArray(listAfter.result)
-    && !listAfter.result.some((entry: any) => entry?.path === contract.filename || entry?.name === contract.filename);
+  const listAfter = await call('filesystem.list', { path: '.', recursive: false, maxEntries: 10000 });
+  const postDeletionVerification = Array.isArray(listAfter.result) && !listAfter.result.some((entry: any) => entry?.path === contract.filename || entry?.name === contract.filename);
   if (!postDeletionVerification) failures.push('post-deletion absence verification failed');
 
-  const lesson = 'Self-verification completed for ' + contract.filename
-    + ': creation, exact read-back, metadata size=' + String(fileSize)
-    + ', deletion, and post-deletion absence were verified.';
-  const memorySet = await call('memory.set', {
-    kind: 'lesson',
-    content: lesson,
-    tags: ['verification', 'reliability'],
-    importance: 8,
-    source: 'Layra verification supervisor'
-  });
-  const persistentMemoryId = memorySet.success
-    ? String(memorySet.result?.id || '') || null
-    : null;
+  const lesson = 'Self-verification completed for ' + contract.filename + ': creation, exact read-back, metadata size=' + String(fileSize) + ', deletion, and post-deletion absence were verified.';
+  const memorySet = await call('memory.set', { kind: 'lesson', content: lesson, tags: ['verification', 'reliability'], importance: 8, source: 'Layra verification supervisor' });
+  const persistentMemoryId = memorySet.success ? String(memorySet.result?.id || '') || null : null;
   if (!persistentMemoryId) failures.push('persistent-memory creation failed');
 
   const memoryRead = await call('memory.get', { query: lesson, limit: 8 });
   const records = Array.isArray(memoryRead.result) ? memoryRead.result : [];
-  const memoryReadBackVerification = Boolean(
-    persistentMemoryId &&
-    memoryRead.success &&
-    records.some((record: any) =>
-      String(record?.id || '') === persistentMemoryId ||
-      String(record?.content || '') === lesson
-    )
-  );
+  const memoryReadBackVerification = Boolean(persistentMemoryId && memoryRead.success && records.some((record: any) => String(record?.id || '') === persistentMemoryId || String(record?.content || '') === lesson));
   if (!memoryReadBackVerification) failures.push('persistent-memory read-back verification failed');
 
   const passed = failures.length === 0;
-  const report: VerificationReport = {
-    recognized: true,
-    passed,
-    workspacePath,
-    workspaceSafe: workspaceSafe && targetSafe,
-    fileCreation,
-    exactReadBack,
-    fileSize,
-    deletion,
-    postDeletionVerification,
-    persistentMemoryId,
-    memoryReadBackVerification,
-    toolCalls,
-    rounds,
-    unsupportedClaimsBlocked: true,
-    failures
-  };
-
+  const report: VerificationReport = { recognized: true, passed, workspacePath, workspaceSafe: workspaceSafe && targetSafe, fileCreation, exactReadBack, fileSize, deletion, postDeletionVerification, persistentMemoryId, memoryReadBackVerification, toolCalls, rounds, unsupportedClaimsBlocked: true, failures };
   const lines = [
     'workspace path: ' + (workspacePath || '(unavailable)'),
     'workspace safety result: ' + (report.workspaceSafe ? 'PASS' : 'FAIL'),
