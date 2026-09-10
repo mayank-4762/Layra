@@ -19,12 +19,20 @@ export interface VerificationReport {
 }
 
 function extractContract(prompt: string): { filename: string; content: string } | null {
-  if (!/self-verification|self verification/i.test(prompt)) return null;
+  if (!/self[- ]verification/i.test(prompt)) return null;
   if (!/persistent[- ]memory/i.test(prompt)) return null;
-  if (!/file named/i.test(prompt)) return null;
-  const match = prompt.match(/file named\s+`?([^`\s]+)`?\s+containing exactly:\s*\n([^\n]+)/i);
-  if (!match) return null;
-  return { filename: path.basename(match[1]), content: match[2] };
+
+  const namedFile = prompt.match(/file named\s+`?([^`\s]+)`?\s+containing exactly:\s*\n([^\n]+)/i);
+  if (namedFile) {
+    return { filename: path.basename(namedFile[1]), content: namedFile[2].trim() };
+  }
+
+  const structuredFile = prompt.match(/filename\s*:\s*`?([^`\n]+?)`?\s*\n\s*(?:contents|content)\s+exactly\s*:\s*\n([^\n]+)/i);
+  if (structuredFile) {
+    return { filename: path.basename(structuredFile[1].trim()), content: structuredFile[2].trim() };
+  }
+
+  return null;
 }
 
 export async function enforceVerificationContract(
