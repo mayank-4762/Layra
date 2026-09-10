@@ -31,6 +31,6 @@ test('tool loop preflights a recognized verification contract before calling the
   assert.equal(modelCalled, false);
   assert.equal(result.stoppedReason, 'completed');
   assert.match(result.content, /entire test passed: PASS/);
-  assert.equal(result.rounds, 7);
+  assert.equal(result.rounds, 1);
   assert.equal(result.toolCalls, 8);
 });
