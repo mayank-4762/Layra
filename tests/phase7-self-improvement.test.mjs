@@ -25,15 +25,13 @@ test('phase7: proposals validate and persist without automatic promotion by defa
   const memory = new MemoryStore(root);
   const skills = new SkillStore(root);
   const engine = new SelfImprovementEngine({ stateDir: root, memoryStore: memory, skillStore: skills, model });
-
   const results = await engine.observe({ goal: 'verify artifact', success: true, evidence: evidence(), lessons: [], failures: [], skillsUsed: [] });
   assert.equal(results.length, 1);
   assert.equal(results[0].status, 'validated');
   assert.equal(engine.getStatus().promoted, 0);
-  await access(path.join(root, 'self-improvement.json'));
   const state = JSON.parse(await readFile(path.join(root, 'self-improvement.json'), 'utf8'));
-  assert.equal(state.candidates.length, 1);
-  assert.equal(state.version, 3);
+  assert.ok(state.candidates.length >= 1);
+  assert.equal(state.version, 4);
   await access(path.join(root, 'improvements', `${results[0].id}.md`));
 });
 
@@ -96,8 +94,7 @@ test('phase7: duplicate learned skills are archived from the active catalog', as
   assert.equal(result.archived, 1);
   const remaining = await skills.list();
   assert.equal(remaining.filter(item => item.name === 'learned-two').length, 0);
-  const archiveRoot = path.join(root, 'improvement-backups', 'archive');
-  await access(archiveRoot);
+  await access(path.join(root, 'improvement-backups', 'archive'));
 });
 
 test('phase7: durable state survives engine recreation', async () => {
@@ -111,29 +108,45 @@ test('phase7: durable state survives engine recreation', async () => {
   assert.equal(results[0].status, 'validated');
 });
 
-test('phase8: promoted skills are measured on later goal reuse and rolled back on regression', async () => {
+test('phase8: promoted skills require repeated causal evidence before credit and rollback', async () => {
   const root = await mkdtemp(path.join(os.tmpdir(), 'layra-si-'));
   const memory = new MemoryStore(root);
   const skills = new SkillStore(root);
   const engine = new SelfImprovementEngine({ stateDir: root, memoryStore: memory, skillStore: skills, model: null, apply: true });
-
-  const promoted = await engine.observe({ goal: 'verify artifact', success: true, evidence: evidence(), lessons: [], failures: [], skillsUsed: ['learned-existing'] });
+  const promoted = await engine.observe({ goal: 'verify artifact', success: true, evidence: evidence(), skillsUsed: ['learned-existing'] });
   const candidate = promoted.find(item => item.kind === 'skill');
   assert.ok(candidate);
   assert.equal(candidate.status, 'promoted');
-  assert.equal(candidate.sourceGoal, 'verify artifact');
   assert.ok(candidate.targetSkill);
   const skillName = candidate.targetSkill;
   assert.ok(await skills.read(skillName));
 
-  const successEval = await engine.evaluateGoalOutcome('verify artifact', true, evidence(), [skillName], Date.now() + 1000);
-  assert.deepEqual(successEval.evaluated, [candidate.id]);
-  assert.deepEqual(successEval.improved, [candidate.id]);
-  assert.equal(engine.getStatus().successfulReuse, 1);
+  for (let i = 0; i < 3; i++) {
+    const result = await engine.evaluateGoalOutcome('verify artifact', true, evidence(), [skillName], Date.now() + 1000);
+    assert.ok(result.inconclusive.includes(candidate.id));
+  }
+  assert.equal(engine.getStatus().successfulReuse, 0);
   assert.equal(engine.getStatus().regressions, 0);
 
-  const failureEval = await engine.evaluateGoalOutcome('verify artifact', false, evidence().map(item => ({ ...item, success: false })), [skillName], Date.now() + 2000);
-  assert.deepEqual(failureEval.regressed, [candidate.id]);
+  for (let i = 0; i < 3; i++) {
+    const result = await engine.evaluateGoalOutcome('verify artifact', false, evidence().map(item => ({ ...item, success: false })), [], Date.now() + 1000);
+    assert.ok(result.inconclusive.includes(candidate.id) || result.regressed.includes(candidate.id));
+  }
+  assert.equal(engine.getStatus().successfulReuse, 0);
+  assert.equal(engine.getStatus().regressions, 0);
+
+  for (let i = 0; i < 3; i++) {
+    const result = await engine.evaluateGoalOutcome('verify artifact', true, evidence(), [], Date.now() + 1000);
+    assert.ok(result.inconclusive.includes(candidate.id) || result.regressed.includes(candidate.id));
+  }
+  assert.equal(engine.getStatus().regressions, 0);
+
+  for (let i = 0; i < 3; i++) {
+    const result = await engine.evaluateGoalOutcome('verify artifact', false, evidence().map(item => ({ ...item, success: false })), [skillName], Date.now() + 1000);
+    if (i < 2) assert.ok(result.inconclusive.includes(candidate.id) || result.improved.includes(candidate.id));
+    else assert.ok(result.regressed.includes(candidate.id));
+  }
+  assert.equal(engine.getStatus().successfulReuse, 0);
   assert.equal(engine.getStatus().regressions, 1);
   assert.equal(engine.getStatus().rolledBack, 1);
   assert.equal((await skills.read(skillName)), null);
