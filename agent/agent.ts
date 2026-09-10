@@ -11,6 +11,7 @@ import { SkillStore } from '../core/skills';
 import { SelfImprovementEngine, ImprovementEvidence } from './self-improvement';
 import { runToolLoop, ToolLoopResult } from './tool-loop';
 import { attemptedSkills, normalizeSkillRefs, recordSkillUsage, successfulSkills, SkillUsageEvidence } from './skill-attribution';
+import { enforceVerificationContract } from './task-contract';
 
 /** Layra is one runtime: reasoning, planning, action, memory, evaluation and learning share the same state. */
 export class HybridAgent {
@@ -108,7 +109,9 @@ export class HybridAgent {
       { role: 'system', content: 'You are Layra, one unified autonomous agent. Use tools when evidence or action is required. Never claim a tool action succeeded unless the tool result says success.' },
       { role: 'user', content: text }
     ];
-    const result = await runToolLoop(messages, this.toolRegistry, this.toolExecutor, { signal, maxRounds: Number(process.env.LAYRA_MAX_TOOL_ROUNDS || 16), maxToolCallsPerRound: Number(process.env.LAYRA_MAX_TOOL_CALLS_PER_ROUND || 8) });
+    let result = await runToolLoop(messages, this.toolRegistry, this.toolExecutor, { signal, maxRounds: Number(process.env.LAYRA_MAX_TOOL_ROUNDS || 16), maxToolCallsPerRound: Number(process.env.LAYRA_MAX_TOOL_CALLS_PER_ROUND || 8) });
+    const enforced = await enforceVerificationContract(text, this.toolExecutor, this.memoryStore, { rounds: result.rounds, toolCalls: result.toolCalls });
+    if (enforced) result = { ...result, content: enforced.content, stoppedReason: enforced.result.passed ? 'completed' : 'tool_error', rounds: enforced.result.rounds, toolCalls: enforced.result.toolCalls };
     this.state.shortTermMemory.lastInteractiveTurn = { prompt: text, content: result.content, rounds: result.rounds, toolCalls: result.toolCalls, stoppedReason: result.stoppedReason, timestamp: new Date().toISOString() };
     await this.sessionStore.event('interactive_turn', result.content || result.stoppedReason, { rounds: result.rounds, toolCalls: result.toolCalls });
     return result;

@@ -34,6 +34,7 @@ export class ToolExecutor {
       case 'filesystem.read': return this.wrap(await this.runtime.filesystemRead(parameters), startTime);
       case 'filesystem.list': return this.wrap(await this.runtime.filesystemList(parameters), startTime);
       case 'filesystem.write': return this.wrap(await this.runtime.filesystemWrite(parameters), startTime);
+      case 'filesystem.delete': return this.wrap(await this.runtime.filesystemDelete(parameters), startTime);
       case 'shell.execute': return this.wrap(await this.runtime.shellExecute(parameters, signal), startTime);
       case 'process.start': { if (process.env.LAYRA_ALLOW_SHELL !== 'true') return this.fail(toolName, 'Shell execution disabled; set LAYRA_ALLOW_SHELL=true to enable it', startTime); const command = String(parameters.command || '').trim(); assertSafeShellCommand(command); const cwd = path.resolve(this.runtime.workspaceRoot, String(parameters.cwd || '.')); const rel = path.relative(this.runtime.workspaceRoot, cwd); if (rel === '..' || rel.startsWith(`..${path.sep}`) || path.isAbsolute(rel)) return this.fail(toolName, 'Working directory escapes Layra workspace', startTime); return this.ok(this.processRegistry.start(command, cwd, this.safeChildEnv()), startTime, { executor: 'native-process', background: true }); }
       case 'process.poll': return this.ok(this.processRegistry.poll(String(parameters.id || '')), startTime, { executor: 'native-process' });
