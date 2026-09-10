@@ -4,11 +4,13 @@ import assert from 'node:assert/strict';
 test('verification contract enforces exact execution evidence', async () => {
   const { enforceVerificationContract } = await import('../dist/agent/task-contract.js');
   const prompt = [
-    'Run a complete real-world self-verification test.',
-    'Create a temporary file named layra-production-test.txt containing exactly:',
+    'Run the complete real-world self-verification test below.',
+    'Create exactly this temporary file:',
+    'filename: layra-production-test.txt',
+    'contents exactly:',
     'LAYRA_PRODUCTION_TEST_OK',
-    'Record a concise persistent-memory lesson.',
-    'Read the recorded memory back and verify that the lesson was actually persisted.'
+    'Record ONE durable persistent-memory lesson.',
+    'Read the newly recorded persistent-memory entry back and verify that it exists.'
   ].join('\n');
   let filePresent = true;
   const executor = { execute: async (name, params) => {
@@ -22,6 +24,8 @@ test('verification contract enforces exact execution evidence', async () => {
     throw new Error(name);
   }};
   const out = await enforceVerificationContract(prompt, executor, {}, { rounds: 2, toolCalls: 1 });
+  assert.ok(out);
+  assert.equal(out.result.recognized, true);
   assert.equal(out.result.passed, true);
   assert.equal(out.result.workspaceSafe, true);
   assert.equal(out.result.fileCreation, true);
