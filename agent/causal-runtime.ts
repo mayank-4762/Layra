@@ -1,6 +1,6 @@
 import { CausalEvaluation, CausalSkillEvaluator } from './causal-skill-evaluation';
 import { SelfImprovementEngine } from './self-improvement';
-import { latestSkillUsageEvidence } from './skill-attribution';
+import { clearLatestSkillUsageEvidence, latestSkillUsageEvidence } from './skill-attribution';
 
 interface CausalContext {
   originalRecordReuse: Function;
@@ -11,10 +11,7 @@ interface CausalContext {
 
 const contexts = new WeakMap<SelfImprovementEngine, CausalContext>();
 
-/**
- * Runtime bridge for causal skill evaluation. It refuses to let the legacy
- * goal-outcome heuristic award credit without comparable evidence.
- */
+/** Runtime bridge: causal credit requires repeated comparable skill/control evidence. */
 export function installCausalSkillEvaluation(): void {
   const proto = SelfImprovementEngine.prototype as any;
   if (proto.__causalSkillInstalled) return;
@@ -51,14 +48,7 @@ export function installCausalSkillEvaluation(): void {
 
     if (relevantSkills.length) {
       for (const candidate of relevantCandidates) {
-        const result = await evaluator.recordObservation({
-          candidateId: candidate.id,
-          skill: candidate.targetSkill,
-          goal,
-          condition: 'skill',
-          success,
-          evidenceSuccessRate: evidenceRate
-        });
+        const result = await evaluator.recordObservation({ candidateId: candidate.id, skill: candidate.targetSkill, goal, condition: 'skill', success, evidenceSuccessRate: evidenceRate });
         verdicts.set(candidate.id, result);
       }
     } else {
@@ -67,14 +57,7 @@ export function installCausalSkillEvaluation(): void {
         catch { return false; }
       }).slice(-20);
       for (const candidate of controlCandidates) {
-        const result = await evaluator.recordObservation({
-          candidateId: candidate.id,
-          skill: candidate.targetSkill,
-          goal,
-          condition: 'control',
-          success,
-          evidenceSuccessRate: evidenceRate
-        });
+        const result = await evaluator.recordObservation({ candidateId: candidate.id, skill: candidate.targetSkill, goal, condition: 'control', success, evidenceSuccessRate: evidenceRate });
         verdicts.set(candidate.id, result);
       }
     }
@@ -93,8 +76,6 @@ export function installCausalSkillEvaluation(): void {
         else insufficientData.push(candidateId);
       }
 
-      // A control run establishes the counterfactual baseline but never earns credit itself.
-      // An effect can change lifecycle state only on a skill-assisted run.
       if (contexts.get(engine)?.skillAssisted) {
         for (const candidateId of regressed) {
           const candidate = promoted.find((item: any) => item.id === candidateId);
@@ -105,6 +86,7 @@ export function installCausalSkillEvaluation(): void {
       return { evaluated: Array.from(verdicts.keys()), improved, regressed, neutral, insufficientData, skillScores: Array.from(verdicts.values()) };
     } finally {
       contexts.delete(engine);
+      clearLatestSkillUsageEvidence();
     }
   };
 
