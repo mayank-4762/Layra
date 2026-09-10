@@ -12,11 +12,12 @@ import { SkillStore } from '../dist/core/skills.js';
 test('phase10 runtime: one successful skill reuse remains insufficient for causal credit', async () => {
   const dir = await mkdtemp(path.join(tmpdir(), 'layra-causal-runtime-'));
   try {
-    const engine = new SelfImprovementEngine({ stateDir: dir, memoryStore: new MemoryStore(dir), skillStore: new SkillStore(dir), model: null, apply: true, minConfidence: 0.8, minEvidence: 2 });
+    const engine = new SelfImprovementEngine({ stateDir: dir, memoryStore: new MemoryStore(dir), skillStore: new SkillStore(dir), model: null, apply: false, minConfidence: 0.8, minEvidence: 2 });
     const first = await engine.observe({ goal: 'verify test file', success: true, evidence: [{ id: 'e1', type: 'tool', summary: 'write success', success: true }, { id: 'e2', type: 'tool', summary: 'read verification', success: true }], skillsUsed: ['learned-existing'] });
     const candidate = first.find(item => item.kind === 'skill');
     assert.ok(candidate);
-    assert.equal(candidate.status, 'promoted');
+    assert.equal(candidate.status, 'validated');
+    assert.equal(await engine.promote(candidate), true);
     recordSkillUsage(undefined, [candidate.targetSkill], 'step-1', true);
     const result = await engine.evaluateGoalOutcome('verify test file', true, [{ id: 'e3', type: 'verification', summary: 'verified', success: true }], [candidate.targetSkill], Date.now() + 1000);
     assert.deepEqual(result.improved, []);
@@ -27,24 +28,29 @@ test('phase10 runtime: one successful skill reuse remains insufficient for causa
   }
 });
 
-test('phase10 runtime: three skill and three control outcomes earn causal credit once', async () => {
+test('phase10 runtime: repeated comparable skill/control outcomes earn causal credit once', async () => {
   const dir = await mkdtemp(path.join(tmpdir(), 'layra-causal-runtime-'));
   try {
-    const engine = new SelfImprovementEngine({ stateDir: dir, memoryStore: new MemoryStore(dir), skillStore: new SkillStore(dir), model: null, apply: true, minConfidence: 0.8, minEvidence: 2 });
+    const engine = new SelfImprovementEngine({ stateDir: dir, memoryStore: new MemoryStore(dir), skillStore: new SkillStore(dir), model: null, apply: false, minConfidence: 0.8, minEvidence: 2 });
     const first = await engine.observe({ goal: 'publish verified artifact', success: true, evidence: [{ id: 'e1', type: 'tool', summary: 'artifact created', success: true }, { id: 'e2', type: 'tool', summary: 'artifact verified', success: true }], skillsUsed: ['learned-existing'] });
     const candidate = first.find(item => item.kind === 'skill');
     assert.ok(candidate?.targetSkill);
+    assert.equal(await engine.promote(candidate), true);
 
+    // Additional skill-assisted observations: these must remain inconclusive until control data exists.
     for (let i = 0; i < 3; i++) {
       recordSkillUsage(undefined, [candidate.targetSkill], `skill-${i}`, true);
       const result = await engine.evaluateGoalOutcome('publish verified artifact', true, [{ id: `s-${i}-1`, type: 'verification', summary: 'verified', success: true }], [candidate.targetSkill], Date.now() + 1000);
-      if (i < 2) assert.equal(result.improved.length, 0);
+      assert.ok(result.insufficientData.includes(candidate.id) || result.evaluated.length === 0);
+      assert.equal(engine.getStatus().successfulReuse, 0);
     }
 
+    // No-skill runs become the counterfactual control. They establish baseline evidence but never credit/rollback the skill.
     for (let i = 0; i < 3; i++) {
       recordSkillUsage(undefined, [], `control-${i}`, true);
       const result = await engine.evaluateGoalOutcome('publish verified artifact', false, [{ id: `c-${i}-1`, type: 'verification', summary: 'control failure', success: false }], [], Date.now() + 1000);
-      assert.ok(result.skillScores.length >= 1);
+      assert.equal(result.improved.length, 0);
+      assert.equal(result.regressed.length, 0);
     }
 
     recordSkillUsage(undefined, [candidate.targetSkill], 'final-skill', true);
@@ -52,6 +58,7 @@ test('phase10 runtime: three skill and three control outcomes earn causal credit
     assert.deepEqual(final.improved, [candidate.id]);
     assert.equal(engine.getStatus().successfulReuse, 1);
 
+    // A later success produces the same causal verdict, but must not double-count reuse credit.
     recordSkillUsage(undefined, [candidate.targetSkill], 'repeat-skill', true);
     const repeat = await engine.evaluateGoalOutcome('publish verified artifact', true, [{ id: 'repeat-1', type: 'verification', summary: 'verified', success: true }], [candidate.targetSkill], Date.now() + 1000);
     assert.deepEqual(repeat.improved, [candidate.id]);
