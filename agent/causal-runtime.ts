@@ -67,35 +67,35 @@ export function installCausalSkillEvaluation(): void {
       await originalEvaluate.call(engine, goal, success, evidence, relevantSkills, startedAt);
       const improved: string[] = [];
       const regressed: string[] = [];
-      const neutral: string[] = [];
       const insufficientData: string[] = [];
       for (const [candidateId, verdict] of verdicts) {
         if (verdict.verdict === 'improved') improved.push(candidateId);
         else if (verdict.verdict === 'regressed') regressed.push(candidateId);
-        else if (verdict.verdict === 'neutral') neutral.push(candidateId);
         else insufficientData.push(candidateId);
       }
 
       if (contexts.get(engine)?.skillAssisted) {
         for (const candidateId of regressed) {
           const candidate = promoted.find((item: any) => item.id === candidateId);
-          if (candidate && candidate.causalLastVerdict !== 'regressed') await originalRecordReuse.call(engine, candidateId, false);
+          if (candidate && candidate.causalLastVerdict !== 'regressed') {
+            await originalRecordReuse.call(engine, candidateId, false);
+          }
         }
       }
 
-      return { evaluated: Array.from(verdicts.keys()), improved, regressed, neutral, insufficientData, skillScores: Array.from(verdicts.values()) };
+      return { evaluated: Array.from(verdicts.keys()), improved, regressed, neutral: [], insufficientData, skillScores: Array.from(verdicts.values()) };
     } finally {
       contexts.delete(engine);
       clearLatestSkillUsageEvidence();
     }
   };
 
-  proto.recordReuse = async function(candidateId: string, improved: boolean) {
+  proto.recordReuse = async function(candidateId: string, _improved: boolean) {
     const engine = this as SelfImprovementEngine;
     const context = contexts.get(engine);
     if (!context?.active || !context.skillAssisted) return false;
     const verdict = context.verdicts.get(candidateId);
-    if (!verdict || verdict.verdict === 'inconclusive' || verdict.verdict === 'neutral') return false;
+    if (!verdict || verdict.verdict === 'inconclusive') return false;
     const state = (engine as any).state;
     const candidate = Array.isArray(state?.candidates) ? state.candidates.find((item: any) => item.id === candidateId) : null;
     const previous = candidate?.causalLastVerdict;
