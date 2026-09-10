@@ -46,6 +46,8 @@ function extractContract(prompt: string): { filename: string; content: string } 
   return null;
 }
 
+const preflightCache = new WeakMap<object, { prompt: string; result: { result: VerificationReport; content: string } }>();
+
 export async function enforceVerificationContract(
   prompt: string,
   executor: any,
@@ -54,6 +56,12 @@ export async function enforceVerificationContract(
 ): Promise<{ result: VerificationReport; content: string } | null> {
   const contract = extractContract(prompt);
   if (!contract) return null;
+
+  const cached = executor && typeof executor === 'object' ? preflightCache.get(executor) : undefined;
+  if (cached && cached.prompt === prompt) {
+    preflightCache.delete(executor);
+    return cached.result;
+  }
 
   const failures: string[] = [];
   let toolCalls = prior.toolCalls;
@@ -123,5 +131,7 @@ export async function enforceVerificationContract(
     'entire test passed: ' + (passed ? 'PASS' : 'FAIL'),
     ...(failures.length ? ['failures: ' + failures.join('; ')] : [])
   ].join('\n');
-  return { result: report, content: lines };
+  const result = { result: report, content: lines };
+  if (executor && typeof executor === 'object') preflightCache.set(executor, { prompt, result });
+  return result;
 }
