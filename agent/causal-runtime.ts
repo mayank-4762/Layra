@@ -61,7 +61,6 @@ export function installCausalSkillEvaluation(): void {
         verdicts.set(candidate.id, result);
       }
     } else {
-      // A goal with no executed skill is a control observation for relevant promoted skills.
       const controlCandidates = promoted.filter((candidate: any) => {
         try { return (engine as any).isRelevant(candidate, goal, []); }
         catch { return false; }
@@ -81,8 +80,6 @@ export function installCausalSkillEvaluation(): void {
 
     contexts.set(engine, { originalRecordReuse, active: true, verdicts });
     try {
-      // The original method still performs goal filtering, but its reuse side effects are
-      // intercepted below so one successful run cannot earn causal credit.
       const result = await originalEvaluate.call(engine, goal, success, evidence, relevantSkills, startedAt);
       const improved: string[] = [];
       const regressed: string[] = [];
@@ -110,6 +107,11 @@ export function installCausalSkillEvaluation(): void {
     if (!context?.active) return originalRecordReuse.call(engine, candidateId, improved);
     const verdict = context.verdicts.get(candidateId);
     if (!verdict || verdict.verdict === 'inconclusive' || verdict.verdict === 'neutral') return false;
+    const state = (engine as any).state;
+    const candidate = Array.isArray(state?.candidates) ? state.candidates.find((item: any) => item.id === candidateId) : null;
+    const previous = candidate?.causalLastVerdict;
+    if (previous === verdict.verdict) return false;
+    if (candidate) candidate.causalLastVerdict = verdict.verdict;
     return context.originalRecordReuse.call(engine, candidateId, verdict.verdict === 'improved');
   };
 }
