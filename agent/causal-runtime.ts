@@ -1,9 +1,8 @@
 import { CausalEvaluation, CausalSkillEvaluator } from './causal-skill-evaluation';
 import { SelfImprovementEngine } from './self-improvement';
-import { SkillUsageEvidence } from './skill-attribution';
+import { latestSkillUsageEvidence } from './skill-attribution';
 
 interface CausalContext {
-  originalEvaluate: Function;
   originalRecordReuse: Function;
   active: boolean;
   verdicts: Map<string, CausalEvaluation>;
@@ -12,9 +11,8 @@ interface CausalContext {
 const contexts = new WeakMap<SelfImprovementEngine, CausalContext>();
 
 /**
- * Runtime bridge for causal skill evaluation. It deliberately refuses to let the
- * legacy goal-outcome heuristic award credit: promoted skills need comparable
- * skill-assisted and no-skill control observations first.
+ * Runtime bridge for causal skill evaluation. It refuses to let the legacy
+ * goal-outcome heuristic award credit without comparable evidence.
  */
 export function installCausalSkillEvaluation(): void {
   const proto = SelfImprovementEngine.prototype as any;
@@ -40,20 +38,18 @@ export function installCausalSkillEvaluation(): void {
     const promoted = Array.isArray(state?.candidates)
       ? state.candidates.filter((candidate: any) => candidate?.status === 'promoted' && candidate?.targetSkill)
       : [];
-    const relevant = promoted.filter((candidate: any) => {
-      try { return (engine as any).isRelevant(candidate, goal, skillsUsed); } catch { return candidate?.targetSkill && skillsUsed.includes(candidate.targetSkill); }
+    const usage = Array.isArray(latestSkillUsageEvidence) ? latestSkillUsageEvidence.slice(-100) : [];
+    const actualSkills = Array.from(new Set(usage.map(item => item.skill).filter(Boolean)));
+    const relevantSkills = actualSkills.length ? actualSkills : skillsUsed;
+    const relevantCandidates = promoted.filter((candidate: any) => {
+      try { return candidate?.targetSkill && relevantSkills.includes(candidate.targetSkill) && (engine as any).isRelevant(candidate, goal, relevantSkills); }
+      catch { return candidate?.targetSkill && relevantSkills.includes(candidate.targetSkill); }
     }).slice(-20);
-
-    const verdicts = new Map<string, CausalEvaluation>();
-    const usage = Array.isArray((engine as any).__lastSkillUsage)
-      ? (engine as any).__lastSkillUsage as SkillUsageEvidence[]
-      : [];
-    const actualSkills = Array.from(new Set(usage.length ? usage.map(item => item.skill) : skillsUsed)).filter(Boolean);
     const evidenceRate = evidence.length ? evidence.filter(item => item.success).length / evidence.length : (success ? 1 : 0);
+    const verdicts = new Map<string, CausalEvaluation>();
 
-    if (actualSkills.length) {
-      for (const candidate of relevant) {
-        if (!actualSkills.includes(candidate.targetSkill)) continue;
+    if (relevantSkills.length) {
+      for (const candidate of relevantCandidates) {
         const result = await evaluator.recordObservation({
           candidateId: candidate.id,
           skill: candidate.targetSkill,
@@ -65,8 +61,12 @@ export function installCausalSkillEvaluation(): void {
         verdicts.set(candidate.id, result);
       }
     } else {
-      // No skill was executed: use this run as a control observation for relevant promoted candidates.
-      for (const candidate of relevant) {
+      // A goal with no executed skill is a control observation for relevant promoted skills.
+      const controlCandidates = promoted.filter((candidate: any) => {
+        try { return (engine as any).isRelevant(candidate, goal, []); }
+        catch { return false; }
+      }).slice(-20);
+      for (const candidate of controlCandidates) {
         const result = await evaluator.recordObservation({
           candidateId: candidate.id,
           skill: candidate.targetSkill,
@@ -79,40 +79,26 @@ export function installCausalSkillEvaluation(): void {
       }
     }
 
-    (engine as any).__lastSkillUsage = undefined;
-    contexts.set(engine, { originalEvaluate, originalRecordReuse, active: true, verdicts });
-
+    contexts.set(engine, { originalRecordReuse, active: true, verdicts });
     try {
-      const result = await originalEvaluate.call(engine, goal, success, evidence, skillsUsed, startedAt);
+      // The original method still performs goal filtering, but its reuse side effects are
+      // intercepted below so one successful run cannot earn causal credit.
+      const result = await originalEvaluate.call(engine, goal, success, evidence, relevantSkills, startedAt);
       const improved: string[] = [];
       const regressed: string[] = [];
       const neutral: string[] = [];
       const insufficientData: string[] = [];
-
       for (const [candidateId, verdict] of verdicts) {
         if (verdict.verdict === 'improved') improved.push(candidateId);
         else if (verdict.verdict === 'regressed') regressed.push(candidateId);
         else if (verdict.verdict === 'neutral') neutral.push(candidateId);
         else insufficientData.push(candidateId);
       }
-
-      // Ensure regressions discovered by the causal evaluator trigger rollback even when
-      // the legacy heuristic did not include that candidate in its own evaluated set.
       for (const candidateId of regressed) {
         const candidate = promoted.find((item: any) => item.id === candidateId);
-        if (candidate && !result.regressed?.includes(candidateId)) {
-          await originalRecordReuse.call(engine, candidateId, false);
-        }
+        if (candidate && !result.regressed?.includes(candidateId)) await originalRecordReuse.call(engine, candidateId, false);
       }
-
-      return {
-        evaluated: Array.from(verdicts.keys()),
-        improved,
-        regressed,
-        neutral,
-        insufficientData,
-        skillScores: Array.from(verdicts.values())
-      };
+      return { evaluated: Array.from(verdicts.keys()), improved, regressed, neutral, insufficientData, skillScores: Array.from(verdicts.values()) };
     } finally {
       contexts.delete(engine);
     }
@@ -121,14 +107,11 @@ export function installCausalSkillEvaluation(): void {
   proto.recordReuse = async function(candidateId: string, improved: boolean) {
     const engine = this as SelfImprovementEngine;
     const context = contexts.get(engine);
-    if (!context?.active) return context ? context.originalRecordReuse.call(engine, candidateId, improved) : originalRecordReuse.call(engine, candidateId, improved);
+    if (!context?.active) return originalRecordReuse.call(engine, candidateId, improved);
     const verdict = context.verdicts.get(candidateId);
-    if (!verdict || verdict.verdict === 'inconclusive') return false;
-    if (verdict.verdict === 'improved') return context.originalRecordReuse.call(engine, candidateId, true);
-    if (verdict.verdict === 'regressed') return context.originalRecordReuse.call(engine, candidateId, false);
-    return false;
+    if (!verdict || verdict.verdict === 'inconclusive' || verdict.verdict === 'neutral') return false;
+    return context.originalRecordReuse.call(engine, candidateId, verdict.verdict === 'improved');
   };
 }
 
-// Start monitoring as soon as the module is imported by the CLI.
 installCausalSkillEvaluation();
