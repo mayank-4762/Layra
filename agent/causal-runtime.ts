@@ -6,6 +6,7 @@ interface CausalContext {
   originalRecordReuse: Function;
   active: boolean;
   verdicts: Map<string, CausalEvaluation>;
+  skillAssisted: boolean;
 }
 
 const contexts = new WeakMap<SelfImprovementEngine, CausalContext>();
@@ -78,9 +79,9 @@ export function installCausalSkillEvaluation(): void {
       }
     }
 
-    contexts.set(engine, { originalRecordReuse, active: true, verdicts });
+    contexts.set(engine, { originalRecordReuse, active: true, verdicts, skillAssisted: relevantSkills.length > 0 });
     try {
-      const result = await originalEvaluate.call(engine, goal, success, evidence, relevantSkills, startedAt);
+      await originalEvaluate.call(engine, goal, success, evidence, relevantSkills, startedAt);
       const improved: string[] = [];
       const regressed: string[] = [];
       const neutral: string[] = [];
@@ -91,10 +92,16 @@ export function installCausalSkillEvaluation(): void {
         else if (verdict.verdict === 'neutral') neutral.push(candidateId);
         else insufficientData.push(candidateId);
       }
-      for (const candidateId of regressed) {
-        const candidate = promoted.find((item: any) => item.id === candidateId);
-        if (candidate && !result.regressed?.includes(candidateId)) await originalRecordReuse.call(engine, candidateId, false);
+
+      // A control run establishes the counterfactual baseline but never earns credit itself.
+      // An effect can change lifecycle state only on a skill-assisted run.
+      if (contexts.get(engine)?.skillAssisted) {
+        for (const candidateId of regressed) {
+          const candidate = promoted.find((item: any) => item.id === candidateId);
+          if (candidate && candidate.causalLastVerdict !== 'regressed') await originalRecordReuse.call(engine, candidateId, false);
+        }
       }
+
       return { evaluated: Array.from(verdicts.keys()), improved, regressed, neutral, insufficientData, skillScores: Array.from(verdicts.values()) };
     } finally {
       contexts.delete(engine);
@@ -104,7 +111,7 @@ export function installCausalSkillEvaluation(): void {
   proto.recordReuse = async function(candidateId: string, improved: boolean) {
     const engine = this as SelfImprovementEngine;
     const context = contexts.get(engine);
-    if (!context?.active) return originalRecordReuse.call(engine, candidateId, improved);
+    if (!context?.active || !context.skillAssisted) return false;
     const verdict = context.verdicts.get(candidateId);
     if (!verdict || verdict.verdict === 'inconclusive' || verdict.verdict === 'neutral') return false;
     const state = (engine as any).state;
