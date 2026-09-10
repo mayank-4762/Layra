@@ -19,9 +19,7 @@ jobs:
         with:
           node-version: 22
       - name: Apply patch
-        run: |
-          node scripts/apply-reliability-patch.mjs
-          node -e "const fs=require('fs'); const p='tests/task-contract.test.mjs'; let s=fs.readFileSync(p,'utf8'); s=s.replace(\"  assert.equal(out.result.postDeletionVerification, false);\",\"  assert.equal(out.result.postDeletionVerification, true);\"); fs.writeFileSync(p,s);"
+        run: node scripts/apply-reliability-patch.mjs
       - name: Commit patch
         run: |
           git config user.name "github-actions[bot]"
