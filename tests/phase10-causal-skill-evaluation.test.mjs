@@ -41,7 +41,7 @@ test('phase10: mixed or weak differences remain inconclusive rather than trigger
   try {
     const evaluator = new CausalSkillEvaluator(dir);
     const skillOutcomes = [true, false, true];
-    const controlOutcomes = [true, false, false];
+    const controlOutcomes = [true, true, false];
     for (let i = 0; i < 3; i++) {
       await evaluator.recordObservation({ candidateId: 'c3', skill: 'learned-test', goal: 'publish article', condition: 'skill', success: skillOutcomes[i], evidenceSuccessRate: skillOutcomes[i] ? 1 : 0.5 });
       await evaluator.recordObservation({ candidateId: 'c3', skill: 'learned-test', goal: 'publish article', condition: 'control', success: controlOutcomes[i], evidenceSuccessRate: controlOutcomes[i] ? 1 : 0.5 });
