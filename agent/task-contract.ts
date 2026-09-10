@@ -18,18 +18,39 @@ export interface VerificationReport {
   failures: string[];
 }
 
+function cleanToken(value: string): string {
+  return value.trim().replace(/^['"]|['"]$/g, '');
+}
+
 function extractContract(prompt: string): { filename: string; content: string } | null {
   if (!/self[- ]verification/i.test(prompt)) return null;
   if (!/persistent[- ]memory/i.test(prompt)) return null;
 
-  const namedFile = prompt.match(/file named\s+`?([^`\s]+)`?\s+containing exactly:\s*\n([^\n]+)/i);
+  const namedFile = prompt.match(
+    /file\s+named\s+`?([^`\s]+)`?\s+containing\s+exactly\s*:\s*\n\s*([^\n\r]+)/i
+  );
   if (namedFile) {
-    return { filename: path.basename(namedFile[1]), content: namedFile[2].trim() };
+    return { filename: path.basename(cleanToken(namedFile[1])), content: namedFile[2].trimEnd() };
   }
 
-  const structuredFile = prompt.match(/filename\s*:\s*`?([^`\n]+?)`?\s*\n\s*(?:contents|content)\s+exactly\s*:\s*\n([^\n]+)/i);
+  const structuredFile = prompt.match(
+    /(?:^|\n)\s*file\s*name\s*:\s*`?([^`\n]+?)`?\s*\n\s*(?:contents?|data)\s+exactly\s*:\s*\n\s*([^\n\r]+)/i
+  );
   if (structuredFile) {
-    return { filename: path.basename(structuredFile[1].trim()), content: structuredFile[2].trim() };
+    return {
+      filename: path.basename(cleanToken(structuredFile[1])),
+      content: structuredFile[2].trimEnd()
+    };
+  }
+
+  const inlineStructured = prompt.match(
+    /filename\s*[:=]\s*`?([^`\n]+?)`?\s*(?:[;,]|\n+)\s*(?:contents?|content)\s*[:=]\s*`?([^`\n]+)`?/i
+  );
+  if (inlineStructured) {
+    return {
+      filename: path.basename(cleanToken(inlineStructured[1])),
+      content: inlineStructured[2].trimEnd()
+    };
   }
 
   return null;
