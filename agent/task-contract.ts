@@ -40,8 +40,8 @@ function extractContract(prompt: string): { filename: string; content: string } 
   if (inlineStructured) return { filename: path.basename(cleanToken(inlineStructured[1])), content: inlineStructured[2].trimEnd() };
 
   const naturalFile = normalized.match(/(?:create|write|make)\s+(?:exactly\s+)?(?:a\s+)?(?:temporary\s+)?(?:file\s+)?(?:named\s+)?`?([A-Za-z0-9._/-]+\.txt)`?/i);
-  const exactContent = normalized.match(/(?:contents?|content|data)\s*(?:must\s+be|should\s+be|exactly\s*[:=])\s*\n?\s*`?([^`\n\r]+)`?/i);
-  if (naturalFile && exactContent) return { filename: path.basename(cleanToken(naturalFile[1])), content: exactContent[1].trimEnd() };
+  const exactContent = normalized.match(/(?:contents?|content|data)\s*(?:must\s+be|should\s+be)\s*:?\s*\n?\s*`?([^`\n\r]+)`?|(?:contents?|content|data)\s*(?:exactly\s*[:=])\s*\n?\s*`?([^`\n\r]+)`?/i);
+  if (naturalFile && exactContent) return { filename: path.basename(cleanToken(naturalFile[1])), content: (exactContent[1] ?? exactContent[2]).trimEnd() };
 
   return null;
 }
