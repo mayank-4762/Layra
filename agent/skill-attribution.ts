@@ -7,8 +7,12 @@ export interface SkillUsageEvidence {
 
 const MAX_SKILL_REFS_PER_STEP = 4;
 
-/** Process-local snapshot used only for goal-finalization attribution. The normal persisted source of truth remains AgentState. */
+/** Process-local snapshot used only for goal-finalization attribution. The persisted source of truth remains AgentState. */
 export let latestSkillUsageEvidence: SkillUsageEvidence[] = [];
+
+export function clearLatestSkillUsageEvidence(): void {
+  latestSkillUsageEvidence = [];
+}
 
 /** Keep model-provided skill references bounded and, when supplied, limited to skills actually retrieved for the goal. */
 export function normalizeSkillRefs(refs: unknown, allowed?: Iterable<string>): string[] {
