@@ -4,6 +4,7 @@ import { createModelClient } from '../config/model-provider';
 import { MemoryStore } from '../core/memory';
 import { SkillStore } from '../core/skills';
 import { assertSafeRelativePath, inspectUntrustedText } from '../core/security';
+import { CausalSkillEvaluator } from './causal-skill-evaluation';
 
 export type ImprovementKind = 'knowledge' | 'skill' | 'strategy' | 'code';
 export type ImprovementStatus = 'proposed' | 'validated' | 'promoted' | 'rejected' | 'rolled_back';
@@ -18,9 +19,9 @@ export interface ImprovementCandidate {
 }
 
 interface ImprovementState {
-  version: 3; candidates: ImprovementCandidate[]; promotedCount: number; rejectedCount: number;
+  version: 4; candidates: ImprovementCandidate[]; promotedCount: number; rejectedCount: number;
   rollbackCount: number; lastRunAt: string | null; successfulReuseCount: number; regressionCount: number;
-  lastCuratorRunAt: string | null; reuseEvaluations: number;
+  lastCuratorRunAt: string | null; reuseEvaluations: number; causalEvaluations: number; causalInconclusive: number;
 }
 
 export interface SelfImprovementOptions {
@@ -33,9 +34,10 @@ export interface GoalOutcomeEvaluation {
   evaluated: string[];
   improved: string[];
   regressed: string[];
+  inconclusive: string[];
 }
 
-/** Native Layra closed learning loop: observe -> diagnose -> propose -> validate -> promote -> measure -> reuse/rollback. */
+/** Native Layra closed learning loop: observe -> diagnose -> propose -> validate -> promote -> measure -> causal reuse/rollback. */
 export class SelfImprovementEngine {
   private readonly stateDir: string;
   private readonly file: string;
@@ -44,14 +46,16 @@ export class SelfImprovementEngine {
   private readonly memory: MemoryStore;
   private readonly skills: SkillStore;
   private readonly model: SelfImprovementOptions['model'];
+  private readonly causalEvaluator: CausalSkillEvaluator;
   private readonly enabled: boolean;
   private readonly apply: boolean;
   private readonly minConfidence: number;
   private readonly minEvidence: number;
   private readonly maxCandidates: number;
   private state: ImprovementState = {
-    version: 3, candidates: [], promotedCount: 0, rejectedCount: 0, rollbackCount: 0,
-    lastRunAt: null, successfulReuseCount: 0, regressionCount: 0, lastCuratorRunAt: null, reuseEvaluations: 0
+    version: 4, candidates: [], promotedCount: 0, rejectedCount: 0, rollbackCount: 0,
+    lastRunAt: null, successfulReuseCount: 0, regressionCount: 0, lastCuratorRunAt: null, reuseEvaluations: 0,
+    causalEvaluations: 0, causalInconclusive: 0
   };
   private loaded = false;
 
@@ -63,6 +67,7 @@ export class SelfImprovementEngine {
     this.memory = options.memoryStore || new MemoryStore(this.stateDir);
     this.skills = options.skillStore || new SkillStore();
     this.model = options.model === undefined ? createModelClient() : options.model;
+    this.causalEvaluator = new CausalSkillEvaluator(this.stateDir);
     this.enabled = options.enabled ?? process.env.LAYRA_SELF_IMPROVEMENT_ENABLED !== 'false';
     this.apply = options.apply ?? process.env.LAYRA_SELF_IMPROVEMENT_APPLY === 'true';
     this.minConfidence = clamp(Number(options.minConfidence ?? process.env.LAYRA_SELF_IMPROVEMENT_MIN_CONFIDENCE ?? 0.8), 0, 1);
@@ -76,7 +81,7 @@ export class SelfImprovementEngine {
       const parsed = JSON.parse(await fs.readFile(this.file, 'utf8')) as Partial<ImprovementState>;
       if (Array.isArray(parsed?.candidates)) {
         this.state = {
-          version: 3,
+          version: 4,
           candidates: parsed.candidates.filter(this.validCandidate).map(item => ({
             ...item,
             previousSkillContent: item.previousSkillContent ?? null,
@@ -85,7 +90,8 @@ export class SelfImprovementEngine {
           promotedCount: Number(parsed.promotedCount || 0), rejectedCount: Number(parsed.rejectedCount || 0),
           rollbackCount: Number(parsed.rollbackCount || 0), lastRunAt: parsed.lastRunAt || null,
           successfulReuseCount: Number(parsed.successfulReuseCount || 0), regressionCount: Number(parsed.regressionCount || 0),
-          lastCuratorRunAt: parsed.lastCuratorRunAt || null, reuseEvaluations: Number(parsed.reuseEvaluations || 0)
+          lastCuratorRunAt: parsed.lastCuratorRunAt || null, reuseEvaluations: Number(parsed.reuseEvaluations || 0),
+          causalEvaluations: Number(parsed.causalEvaluations || 0), causalInconclusive: Number(parsed.causalInconclusive || 0)
         };
       }
     } catch (error: any) {
@@ -93,6 +99,7 @@ export class SelfImprovementEngine {
     }
     await fs.mkdir(this.improvementsDir, { recursive: true });
     await fs.mkdir(this.backupsDir, { recursive: true });
+    await this.causalEvaluator.load();
     this.loaded = true;
   }
 
@@ -134,22 +141,62 @@ export class SelfImprovementEngine {
     return results;
   }
 
-  /** Evaluate a completed goal against improvements that were already promoted before this goal began. */
+  /**
+   * Evaluate a completed goal against improvements that were already promoted before this goal began.
+   * Skill improvements use a delayed causal evaluator: a single success/failure never gets causal credit.
+   */
   async evaluateGoalOutcome(goal: string, success: boolean, evidence: ImprovementEvidence[], skillsUsed: string[] = [], startedAt?: string | number): Promise<GoalOutcomeEvaluation> {
     await this.load();
-    if (!this.enabled) return { evaluated: [], improved: [], regressed: [] };
+    if (!this.enabled) return { evaluated: [], improved: [], regressed: [], inconclusive: [] };
     const startMs = typeof startedAt === 'number' ? startedAt : Date.parse(String(startedAt || ''));
     const threshold = Number.isFinite(startMs) ? startMs : Date.now();
     const relevant = this.state.candidates.filter(candidate => candidate.status === 'promoted'
       && candidate.promotedAt
       && Date.parse(candidate.promotedAt) < threshold
       && this.isRelevant(candidate, goal, skillsUsed));
-    const outcome: GoalOutcomeEvaluation = { evaluated: [], improved: [], regressed: [] };
+    const outcome: GoalOutcomeEvaluation = { evaluated: [], improved: [], regressed: [], inconclusive: [] };
+    const evidenceSuccessRate = evidence.length ? evidence.filter(item => item.success).length / evidence.length : (success ? 1 : 0);
+
     for (const candidate of relevant.slice(-20)) {
       outcome.evaluated.push(candidate.id);
-      const reuseImproved = success && evidence.some(item => item.success);
-      if (reuseImproved) outcome.improved.push(candidate.id); else outcome.regressed.push(candidate.id);
-      await this.recordReuse(candidate.id, reuseImproved);
+      if (candidate.kind === 'skill' && candidate.targetSkill) {
+        const condition = skillsUsed.includes(candidate.targetSkill) ? 'skill' : 'control';
+        const causal = await this.causalEvaluator.recordObservation({
+          candidateId: candidate.id,
+          skill: candidate.targetSkill,
+          goal,
+          condition,
+          success,
+          evidenceSuccessRate
+        });
+        this.state.causalEvaluations += 1;
+        if (causal.verdict === 'improved') {
+          outcome.improved.push(candidate.id);
+          await this.recordReuse(candidate.id, true);
+        } else if (causal.verdict === 'regressed') {
+          outcome.regressed.push(candidate.id);
+          await this.recordReuse(candidate.id, false);
+        } else {
+          outcome.inconclusive.push(candidate.id);
+          this.state.causalInconclusive += 1;
+        }
+        await this.memory.remember({
+          kind: 'event',
+          content: `Causal evaluation ${candidate.id}: ${causal.verdict}; skill=${candidate.targetSkill}; class=${causal.sampleSkill}/${causal.sampleControl}; effect=${causal.effectSize.toFixed(3)}; ${causal.reason}`,
+          tags: ['self-improvement', 'causal-evaluation'],
+          importance: causal.verdict === 'inconclusive' ? 5 : 7,
+          source: candidate.id
+        });
+      } else {
+        const reuseImproved = success && evidence.some(item => item.success);
+        if (reuseImproved) {
+          outcome.improved.push(candidate.id);
+          await this.recordReuse(candidate.id, true);
+        } else {
+          outcome.regressed.push(candidate.id);
+          await this.recordReuse(candidate.id, false);
+        }
+      }
     }
     this.state.reuseEvaluations += outcome.evaluated.length;
     await this.persist();
@@ -274,6 +321,8 @@ export class SelfImprovementEngine {
       candidates: this.state.candidates.length, promoted: this.state.promotedCount, rejected: this.state.rejectedCount,
       rolledBack: this.state.rollbackCount, successfulReuse: this.state.successfulReuseCount,
       regressions: this.state.regressionCount, reuseEvaluations: this.state.reuseEvaluations,
+      causalEvaluations: this.state.causalEvaluations, causalInconclusive: this.state.causalInconclusive,
+      causal: this.causalEvaluator.getStatus(),
       learnedSkills: this.state.candidates.filter(item => item.kind === 'skill' && item.status === 'promoted').length,
       activePromoted: this.state.candidates.filter(item => item.status === 'promoted').length,
       lastRunAt: this.state.lastRunAt, lastCuratorRunAt: this.state.lastCuratorRunAt
