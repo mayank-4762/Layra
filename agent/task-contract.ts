@@ -90,10 +90,13 @@ export async function enforceVerificationContract(
   const failures: string[] = [];
   let toolCalls = prior.toolCalls;
   let rounds = prior.rounds;
-  const call = async (name: string, parameters: Record<string, any>) => { toolCalls += 1; return executor.execute(name, parameters); };
+  const call = async (name: string, parameters: Record<string, any>) => {
+    toolCalls += 1;
+    rounds += 1;
+    return executor.execute(name, parameters);
+  };
 
   const info = await call('system.info', {});
-  rounds += 1;
   const workspacePath = String(info.result?.workspaceRoot || '');
   const cwd = String(info.result?.cwd || '');
   const rel = workspacePath && cwd ? path.relative(workspacePath, cwd) : '..';
