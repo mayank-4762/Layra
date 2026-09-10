@@ -1,0 +1,16 @@
+{
+  "name": "layra",
+  "version": "3.0.0",
+  "private": true,
+  "description": "Layra unified autonomous agent runtime with integrated reasoning, native execution, durable memory, procedural skills, and DeepSeek evaluation.",
+  "main": "dist/main.js",
+  "scripts": {
+    "build": "tsc",
+    "start": "node dist/main.js",
+    "doctor": "node scripts/doctor.mjs",
+    "typecheck": "tsc --noEmit",
+    "test": "npm run typecheck && npm run build && node --test --test-concurrency=1 --test-timeout=30000 tests/*.test.mjs"
+  },
+  "engines": { "node": ">=22" },
+  "devDependencies": { "@types/node": "26.4.1", "typescript": "5.9.2" }
+}

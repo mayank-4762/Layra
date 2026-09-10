@@ -1,70 +1,45 @@
-# Hybrid Agent Harness — OpenClaw + Hermes + DeepSeek
+# Layra Runtime
 
-## Architecture
+Layra is one unified agent. Hermes-inspired reasoning/planning, governed execution, durable state, and DHS/DeepSeek analysis are implemented as capabilities inside the same runtime. Hermes Agent and OpenClaw are source references for selected mechanisms, not separately required runtime processes.
 
-```
-User Input → OpenClaw (Hand/Executor)
-                  ↓
-           Hermes (Brain/Reasoner) — plans, breaks goals into steps
-                  ↓
-           DeepSeek (Nervous System) — heavy analysis, pattern detection
-                  ↓
-           OpenClaw executes tools, writes memory
-                  ↓
-           State flows back to Hermes for next iteration
-```
+## Runtime loop
 
-## Dispatch Protocol
+1. Restore persistent Layra state.
+2. Select or accept a goal.
+3. Generate a bounded plan using currently available tools.
+4. Validate dependencies, permissions, risk and tool availability.
+5. Execute through the single ToolExecutor policy boundary.
+6. Observe tool results and ask the model for continuation/replanning.
+7. Use DHS for evidence analysis, reusable lessons and independent goal verification when DeepSeek is configured.
+8. Verify the actual goal from evidence; completed task count is never sufficient by itself.
+9. Persist state, events, status and report.
+10. Resume from persisted state on the next run.
 
-### Tier 1 — Fast exec (OpenClaw handles alone)
-- File reads, writes, simple commands
-- Short factual lookups
-- Telegram replies
+## Capability model
 
-### Tier 2 — Planning needed (OpenClaw + Hermes reasoning)
-- Multi-step goals
-- Complex decisions
-- Unknown scope
+Safe read-only capabilities are enabled by default. Side-effecting capabilities require explicit environment flags:
 
-### Tier 3 — Heavy analysis (DeepSeek harness invoked)
-- Pattern detection across memory/history
-- Strategic planning
-- Complex comparisons
-- Self-improvement suggestions
+- `LAYRA_ALLOW_LOCAL_WRITE=true`
+- `LAYRA_ALLOW_SHELL=true`
+- `LAYRA_ALLOW_WEB_POST=true`
+- `LAYRA_ALLOW_BROWSER=true` plus `LAYRA_CDP_WS_URL`
+- `LAYRA_ALLOW_MCP=true` plus `LAYRA_MCP_SERVER_COMMAND`
+- `LAYRA_ALLOW_SCHEDULER=true`
+- `LAYRA_ALLOW_DELEGATION=true`
+- `LAYRA_ALLOW_ANDROID=true`
 
-## Harness State (memory/harness-state.json)
+MCP discovery can refresh the live Layra tool catalog so discovered remote tools become first-class model-visible tools while still executing through the same ToolExecutor.
 
-```json
-{
-  "current_goal": "...",
-  "steps": [],
-  "completed": [],
-  "blocked": [],
-  "insights": [],
-  "deepseek_calls": 0
-}
-```
+## Models
 
-## How it works
+The primary model uses an OpenAI-compatible HTTP endpoint configured through `LAYRA_MODEL_*` variables. The default is NVIDIA. DHS uses the direct DeepSeek API configured through `DEEPSEEK_*` variables.
 
-1. **User input** arrives via OpenClaw (Telegram/CLI)
-2. **Hermes** (this agent) plans the approach, breaks into steps
-3. **OpenClaw** executes steps using tools
-4. **DeepSeek** called for Tier-3 heavy analysis (via session_send to DeepSeek subagent)
-5. Results flow back, Hermes updates plan, repeat until done
-6. Final output stored in memory/ for next session
+## Android / Termux
 
-## DeepSeek Subagent Config
+Layra can run as a Node runtime under Termux. The optional Android bridge can use installed Termux:API commands for toast, notification, URL opening and clipboard operations. This is an Android/Termux integration layer, not a native APK or AccessibilityService; those require a separate Android application layer in a future phase.
 
-- Session label: `deepseek-harness`
-- Runtime: isolated
-- System prompt: `agents/hybrid/DEEPSEEK_PROMPT.md`
-- Output: writes to `memory/deepseek-output.json`
+## Verification policy
 
-## Rules
+CI must pass `npm ci`, `npm run typecheck`, `npm run build`, and `npm test`. External browser, MCP and provider integrations should be verified with local deterministic harnesses before any production claim is made.
 
-1. Never block the user — use fast paths when possible
-2. DeepSeek calls = max 3 per session (cost control)
-3. Store every significant decision in memory/
-4. Improve plan based on what worked last time
-5. Fail fast, recover faster
+Start with `npm run build && npm start`, optionally passing a goal as CLI text or `LAYRA_GOAL`.
