@@ -7,7 +7,7 @@ function mockExecutor() {
     if (name === 'system.info') return { success: true, result: { workspaceRoot: '/w', cwd: '/w' } };
     if (name === 'filesystem.write') return { success: true, result: { bytes: Buffer.byteLength('LAYRA_PRODUCTION_TEST_OK', 'utf8') } };
     if (name === 'filesystem.read') return { success: true, result: 'LAYRA_PRODUCTION_TEST_OK' };
-    if (name === 'filesystem.list') return { success: true, result: filePresent ? [{ name: params.path === '.' ? 'layra-production-test.txt' : 'layra-production-test.txt', path: 'layra-production-test.txt', size: 24 }] : [] };
+    if (name === 'filesystem.list') return { success: true, result: filePresent ? [{ name: 'layra-production-test.txt', path: 'layra-production-test.txt', size: 24 }] : [] };
     if (name === 'filesystem.delete') { filePresent = false; return { success: true, result: { deleted: true } }; }
     if (name === 'memory.set') return { success: true, result: { id: 'mem_test_contract' } };
     if (name === 'memory.get') return { success: true, result: [{ id: 'mem_test_contract', content: params.query }] };
@@ -57,7 +57,7 @@ test('verification checklist headings trigger the deterministic preflight', asyn
 file creation:
 exact read-back contents:
 file size:
-deletion:
+deletions:
 post-deletion verification:
 persistent-memory ID:
 memory read-back verification:
@@ -74,6 +74,6 @@ entire test passed: NO`;
   assert.equal(out.result.recognized, true);
   assert.equal(out.result.passed, true);
   assert.equal(out.result.toolCalls, 8);
-  assert.equal(out.result.rounds, 8);
+  assert.equal(out.result.rounds, 1);
   assert.match(out.content, /entire test passed: PASS/);
 });
