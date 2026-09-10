@@ -1,4 +1,5 @@
 import { createInterface } from 'readline';
+import './agent/causal-runtime';
 import { HybridAgent } from './agent/agent';
 import { Phase6ReliabilitySupervisor } from './agent/reliability';
 import { LayraScheduler } from './agent/scheduler';
@@ -164,8 +165,6 @@ async function main(): Promise<void> {
   if (args[0] === '--chat') { await runChat(); return; }
   if (args[0] === '--telegram') { await runTelegram(); return; }
 
-  // With no explicit goal, default to the persistent interactive terminal.
-  // Explicit LAYRA_GOAL or positional arguments still launch autonomous mode.
   const goal = process.env.LAYRA_GOAL || args.join(' ').trim();
   if (!goal) { await runChat(); return; }
 
